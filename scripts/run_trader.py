@@ -17,6 +17,7 @@ from src.data_sources import DexScreenerClient, SolscanClient
 from src.ingestion import TokenScanner, TokenFilter, FeatureExtractor
 from src.models import HazardModel, PumpModel, EVSCalculator
 from src.trading import KellyCalculator, TradeSimulator, TrajectoryMonitor, RiskManager
+from src.notifications import notify_trade_opened, notify_trade_closed
 from src.calibration import LabelGenerator, ModelUpdater, MetricsTracker
 from src.market import RegimeDetector
 from config.settings import SETTINGS
@@ -182,7 +183,8 @@ class TradingApp:
         
         if trade:
             await self._save_trade_features(address, features, evs_result)
-            
+            notify_trade_opened(trade)
+
             logger.info(
                 f"Opened trade: {symbol} @ ${trade.entry_price:.8f}, "
                 f"Size: ${trade.position_size_usd:.2f}, "
@@ -221,6 +223,7 @@ class TradingApp:
     async def on_trade_event(self, event: str, trade) -> None:
         """Callback para eventos de trades v2.0."""
         if event == "trade_closed":
+            notify_trade_closed(trade)
             is_win = trade.pnl_usd > 0
             self.risk_manager.record_trade_result(trade.pnl_usd, is_win)
             
