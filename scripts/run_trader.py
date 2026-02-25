@@ -259,14 +259,16 @@ class TradingApp:
             return
         
         stop_executed = trade.exit_reason in ["stop_loss", "trailing_stop"]
-        
+        # v2.0: Usar label path-dependent (pump/rug/neutral) para recalibración, no exit_reason
+        label = getattr(trade, "label", None) or trade.exit_reason or "unknown"
+
         await self.db.update_trade_features_outcome(
             trade_id=trade_id,
             mfe=trade.current_mfe,
             mae=trade.current_mae,
             pnl=trade.pnl_pct,
             stop_executed=stop_executed,
-            label=trade.exit_reason if hasattr(trade, 'exit_reason') else "unknown",
+            label=label,
         )
     
     def _should_trigger_recalibration(self) -> bool:

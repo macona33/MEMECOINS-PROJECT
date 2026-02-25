@@ -45,7 +45,8 @@ class SimulatedTrade:
     exit_price: Optional[float] = None
     exit_time: Optional[datetime] = None
     exit_reason: Optional[str] = None
-    
+    label: Optional[str] = None  # v2.0: path-dependent (pump/rug/neutral/breakeven)
+
     evs_at_entry: float = 0.0
     p_rug_at_entry: float = 0.0
     p_pump_at_entry: float = 0.0
@@ -87,6 +88,7 @@ class SimulatedTrade:
             "mfe": self.current_mfe,
             "mae": self.current_mae,
             "exit_reason": self.exit_reason,
+            "label": self.label,
             "duration_minutes": self.duration_minutes,
             "evs_at_entry": self.evs_at_entry,
             "p_rug_at_entry": self.p_rug_at_entry,
@@ -330,7 +332,7 @@ class TradeSimulator:
         trade.exit_time = datetime.now()
         trade.exit_reason = reason
         trade.status = TradeStatus.CLOSED
-        
+
         from src.calibration.labels import LabelGenerator
         label_gen = LabelGenerator()
         label = label_gen.generate_label(
@@ -338,7 +340,8 @@ class TradeSimulator:
             mae=trade.current_mae,
             pnl=trade.pnl_pct,
         )
-        
+        trade.label = label
+
         await self.db.close_trade(token_address, {
             "exit_price": exit_price,
             "pnl_pct": trade.pnl_pct,
