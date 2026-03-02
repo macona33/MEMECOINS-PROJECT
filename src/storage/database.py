@@ -351,7 +351,28 @@ class DatabaseManager:
     # ============== TRADE OPERATIONS ==============
     
     async def open_trade(self, trade: Dict[str, Any]) -> int:
+        """
+        Abre trade: inserta en trades (exit=NULL) y en active_trades.
+        Retorna trades.id para que trade_features pueda guardarse al abrir.
+        """
+        # 1. Insertar en trades (exit fields NULL) - debe existir para trade_features
         cursor = await self._connection.execute("""
+            INSERT INTO trades 
+            (token_address, entry_time, entry_price, position_size_usd, kelly_fraction,
+             evs_at_entry, p_rug_at_entry, p_pump_at_entry)
+            VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?)
+        """, (
+            trade["token_address"],
+            trade["entry_price"],
+            trade["position_size_usd"],
+            trade["kelly_fraction"],
+            trade.get("evs_at_entry"),
+            trade.get("p_rug_at_entry"),
+            trade.get("p_pump_at_entry"),
+        ))
+        trade_id = cursor.lastrowid
+        # 2. Insertar en active_trades
+        await self._connection.execute("""
             INSERT INTO active_trades 
             (token_address, entry_price, position_size_usd, kelly_fraction, 
              current_price, stop_price, take_profit_price)
@@ -366,7 +387,7 @@ class DatabaseManager:
             trade["take_profit_price"],
         ))
         await self._connection.commit()
-        return cursor.lastrowid
+        return trade_id
     
     async def get_active_trades(self) -> List[Dict[str, Any]]:
         cursor = await self._connection.execute("SELECT * FROM active_trades")
@@ -390,31 +411,65 @@ class DatabaseManager:
         
         if active_trade:
             active_trade = dict(active_trade)
-            await self._connection.execute("""
-                INSERT INTO trades 
-                (token_address, entry_time, exit_time, entry_price, exit_price,
-                 position_size_usd, kelly_fraction, mfe, mae, pnl_pct, pnl_usd,
-                 label, exit_reason, duration_minutes, evs_at_entry, p_rug_at_entry, p_pump_at_entry)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                token_address,
-                active_trade["entry_time"],
-                datetime.now().isoformat(),
-                active_trade["entry_price"],
-                result["exit_price"],
-                active_trade["position_size_usd"],
-                active_trade["kelly_fraction"],
-                result.get("mfe", active_trade.get("current_mfe", 0)),
-                result.get("mae", active_trade.get("current_mae", 0)),
-                result["pnl_pct"],
-                result["pnl_usd"],
-                result["label"],
-                result["exit_reason"],
-                result.get("duration_minutes"),
-                result.get("evs_at_entry"),
-                result.get("p_rug_at_entry"),
-                result.get("p_pump_at_entry"),
-            ))
+            # Actualizar fila en trades si existe (creada al abrir); si no, INSERT (compatibilidad)
+            cursor = await self._connection.execute("""
+                SELECT id FROM trades 
+                WHERE token_address = ? AND exit_time IS NULL 
+                ORDER BY id DESC LIMIT 1
+            """, (token_address,))
+            row = await cursor.fetchone()
+            if row:
+                await self._connection.execute("""
+                    UPDATE trades SET
+                        exit_time = ?,
+                        exit_price = ?,
+                        mfe = ?,
+                        mae = ?,
+                        pnl_pct = ?,
+                        pnl_usd = ?,
+                        label = ?,
+                        exit_reason = ?,
+                        duration_minutes = ?
+                    WHERE id = ?
+                """, (
+                    datetime.now().isoformat(),
+                    result["exit_price"],
+                    result.get("mfe", active_trade.get("current_mfe", 0)),
+                    result.get("mae", active_trade.get("current_mae", 0)),
+                    result["pnl_pct"],
+                    result["pnl_usd"],
+                    result["label"],
+                    result["exit_reason"],
+                    result.get("duration_minutes"),
+                    row[0],
+                ))
+            else:
+                # Fallback: trades abiertos con código antiguo (solo active_trades)
+                await self._connection.execute("""
+                    INSERT INTO trades 
+                    (token_address, entry_time, exit_time, entry_price, exit_price,
+                     position_size_usd, kelly_fraction, mfe, mae, pnl_pct, pnl_usd,
+                     label, exit_reason, duration_minutes, evs_at_entry, p_rug_at_entry, p_pump_at_entry)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    token_address,
+                    active_trade["entry_time"],
+                    datetime.now().isoformat(),
+                    active_trade["entry_price"],
+                    result["exit_price"],
+                    active_trade["position_size_usd"],
+                    active_trade["kelly_fraction"],
+                    result.get("mfe", active_trade.get("current_mfe", 0)),
+                    result.get("mae", active_trade.get("current_mae", 0)),
+                    result["pnl_pct"],
+                    result["pnl_usd"],
+                    result["label"],
+                    result["exit_reason"],
+                    result.get("duration_minutes"),
+                    result.get("evs_at_entry"),
+                    result.get("p_rug_at_entry"),
+                    result.get("p_pump_at_entry"),
+                ))
             
             await self._connection.execute(
                 "DELETE FROM active_trades WHERE token_address = ?", (token_address,)

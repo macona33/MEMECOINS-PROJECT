@@ -50,7 +50,8 @@ class SimulatedTrade:
     evs_at_entry: float = 0.0
     p_rug_at_entry: float = 0.0
     p_pump_at_entry: float = 0.0
-    
+    trade_id: Optional[int] = None  # ID en tabla trades (para trade_features)
+
     @property
     def pnl_pct(self) -> float:
         if self.exit_price:
@@ -237,15 +238,19 @@ class TradeSimulator:
         
         self._active_trades[token_address] = trade
         self._allocated += position.position_usd
-        
-        await self.db.open_trade({
+
+        trade_id = await self.db.open_trade({
             "token_address": token_address,
             "entry_price": entry_price,
             "position_size_usd": position.position_usd,
             "kelly_fraction": position.kelly_fraction,
             "stop_price": stops["stop_price"],
             "take_profit_price": stops["take_profit_price"],
+            "evs_at_entry": evs_result.evs_adj,
+            "p_rug_at_entry": evs_result.p_rug,
+            "p_pump_at_entry": evs_result.p_pump,
         })
+        trade.trade_id = trade_id
         
         logger.info(
             f"Opened trade: {trade.symbol} @ ${entry_price:.8f}, "

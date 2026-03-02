@@ -182,7 +182,7 @@ class TradingApp:
         )
         
         if trade:
-            await self._save_trade_features(address, features, evs_result)
+            await self._save_trade_features(trade.trade_id, address, features, evs_result)
             notify_trade_opened(trade)
 
             logger.info(
@@ -191,9 +191,8 @@ class TradingApp:
                 f"Kelly mult: {self.risk_manager.get_gamma_multiplier():.2f}"
             )
     
-    async def _save_trade_features(self, token_address: str, features: dict, evs_result) -> None:
+    async def _save_trade_features(self, trade_id: int, token_address: str, features: dict, evs_result) -> None:
         """v2.0: Guarda features completas para recalibración."""
-        trade_id = await self.db.get_last_trade_id(token_address)
         if trade_id is None:
             return
         
@@ -254,7 +253,7 @@ class TradingApp:
     
     async def _update_trade_features_outcome(self, trade) -> None:
         """v2.0: Actualiza outcome en trade_features."""
-        trade_id = await self.db.get_last_trade_id(trade.token_address)
+        trade_id = getattr(trade, "trade_id", None) or await self.db.get_last_trade_id(trade.token_address)
         if trade_id is None:
             return
         
