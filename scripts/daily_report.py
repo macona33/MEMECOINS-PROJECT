@@ -15,6 +15,7 @@ from loguru import logger
 from src.storage import DatabaseManager
 from src.models import HazardModel, PumpModel
 from src.calibration import MetricsTracker, ModelUpdater, LabelGenerator
+from src.notifications import send_daily_pnl_chart
 from config.settings import SETTINGS
 
 logger.remove()
@@ -172,7 +173,12 @@ async def generate_daily_report(days: int = 7):
         report_data = await metrics_tracker.export_metrics(days=days)
         report_data["today"] = today_metrics
         report_data["success_criteria"] = success
-        
+
+        equity_curve = await metrics_tracker.get_equity_curve_from_trades(days=days)
+        if not equity_curve:
+            equity_curve = await metrics_tracker.get_equity_curve(days=days)
+        await send_daily_pnl_chart(equity_curve, initial_capital=SETTINGS["initial_capital"])
+
         report_file = report_dir / f"report_{date.today().isoformat()}.json"
         with open(report_file, "w") as f:
             json.dump(report_data, f, indent=2, default=str)

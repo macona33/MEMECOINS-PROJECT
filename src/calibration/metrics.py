@@ -320,6 +320,38 @@ class MetricsTracker:
             })
         
         return curve
+
+    async def get_equity_curve_from_trades(self, days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Genera curva de equity desde historial de trades (más fiable si daily_metrics está vacío).
+        """
+        from datetime import datetime, timedelta
+
+        trades = await self.db.get_trade_history(days=days)
+        closed = [
+            t for t in trades
+            if t.get("exit_time") and t.get("pnl_usd") is not None
+        ]
+        closed.sort(key=lambda x: str(x.get("exit_time", "")))
+        equity = float(SETTINGS["initial_capital"])
+        curve = []
+        if closed:
+            first_exit = str(closed[0].get("exit_time", ""))[:10]
+            try:
+                first_dt = datetime.strptime(first_exit, "%Y-%m-%d")
+                start_dt = first_dt - timedelta(days=1)
+                curve.append({"date": start_dt.strftime("%Y-%m-%d"), "equity": equity})
+            except (ValueError, TypeError):
+                curve.append({"date": first_exit, "equity": equity})
+        for t in closed:
+            equity += float(t.get("pnl_usd", 0))
+            exit_time = t.get("exit_time", "")
+            date_str = exit_time[:10] if exit_time else None
+            if date_str:
+                curve.append({"date": date_str, "equity": equity})
+        if not curve:
+            curve.append({"date": datetime.now().strftime("%Y-%m-%d"), "equity": equity})
+        return curve
     
     async def export_metrics(self, days: int = 30) -> Dict[str, Any]:
         """

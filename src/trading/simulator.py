@@ -128,6 +128,10 @@ class TradeSimulator:
     @property
     def active_trade_count(self) -> int:
         return len(self._active_trades)
+
+    def set_capital(self, capital: float) -> None:
+        """Actualiza el capital (ej. desde risk_state al cargar)."""
+        self._capital = max(0, capital)
     
     def on_trade_event(self, callback: Callable) -> None:
         """Registra callback para eventos de trade."""
@@ -362,8 +366,9 @@ class TradeSimulator:
         })
         
         self._allocated -= trade.position_size_usd
+        self._capital += trade.pnl_usd
         del self._active_trades[token_address]
-        
+
         logger.info(
             f"Closed trade: {trade.symbol} @ ${exit_price:.8f}, "
             f"PnL: {trade.pnl_pct:.1%} (${trade.pnl_usd:.2f}), "

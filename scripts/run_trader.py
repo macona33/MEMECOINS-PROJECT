@@ -120,7 +120,8 @@ class TradingApp:
         
         await self.scanner.initialize()
         await self.simulator.load_active_trades()
-        
+        self.simulator.set_capital(self.risk_manager.state.current_equity)
+
         self.scanner.on_new_token(self.process_token)
         self.simulator.on_trade_event(self.on_trade_event)
         self.trajectory_monitor.on_price_update(self.on_price_update)
