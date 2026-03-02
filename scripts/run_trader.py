@@ -127,7 +127,11 @@ class TradingApp:
         self.trajectory_monitor.on_price_update(self.on_price_update)
         
         logger.info("Trading application v2.0 initialized")
-        logger.info(f"Initial capital: ${SETTINGS['initial_capital']:,}")
+        equity = self.risk_manager.state.current_equity
+        logger.info(
+            f"Capital: ${equity:,.2f}"
+            + (f" (inicial: ${SETTINGS['initial_capital']:,})" if equity != SETTINGS["initial_capital"] else "")
+        )
         logger.info(f"Kelly gamma: {SETTINGS['kelly_gamma']} (v2.0)")
         logger.info(f"Max position: {SETTINGS['max_position_pct']:.1%} (v2.0)")
         logger.info(f"Active trades: {self.simulator.active_trade_count}")
