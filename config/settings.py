@@ -106,6 +106,10 @@ SETTINGS = {
     "g_fallback": 0.25,               # G conservador si no hay datos
     "g_min_samples": 5,               # Mínimo de samples por bucket
     
+    # ============== REPORTE DIARIO A DISCORD ==============
+    "daily_report_hour_utc": 8,   # Hora (0-23) en UTC para enviar gráfico PnL a Discord
+    "daily_report_days": 30,      # Días de datos para el gráfico
+
     # ============== CRITERIOS DE ÉXITO ==============
     "target_hit_rate": 0.60,
     "max_drawdown_tolerance": 0.40,
