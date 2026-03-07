@@ -17,7 +17,7 @@ from src.data_sources import DexScreenerClient, SolscanClient
 from src.ingestion import TokenScanner, TokenFilter, FeatureExtractor
 from src.models import HazardModel, PumpModel, EVSCalculator
 from src.trading import KellyCalculator, TradeSimulator, TrajectoryMonitor, RiskManager
-from src.notifications import notify_trade_opened, notify_trade_closed, send_daily_pnl_chart
+from src.notifications import notify_trade_opened, notify_trade_closed
 from src.calibration import LabelGenerator, ModelUpdater, MetricsTracker
 from src.market import RegimeDetector
 from config.settings import SETTINGS
@@ -405,43 +405,6 @@ class TradingApp:
             except Exception as e:
                 logger.error(f"Status task error: {e}")
 
-    async def run_daily_report_task(self) -> None:
-        """Envía el gráfico PnL a Discord una vez al día a la hora configurada."""
-        report_hour = SETTINGS.get("daily_report_hour_utc", 8)
-        report_days = SETTINGS.get("daily_report_days", 30)
-        while self._running:
-            try:
-                now = datetime.utcnow()
-                next_run = now.replace(hour=report_hour, minute=0, second=0, microsecond=0)
-                if next_run <= now:
-                    next_run += timedelta(days=1)
-                wait_seconds = (next_run - now).total_seconds()
-                logger.info(
-                    f"v2.0: Next daily PnL report to Discord at {next_run.strftime('%H:%M')} UTC "
-                    f"(in {wait_seconds / 3600:.1f}h)"
-                )
-                await asyncio.sleep(min(wait_seconds, 86400))
-                if not self._running:
-                    break
-                try:
-                    metrics_tracker = MetricsTracker(self.db)
-                    equity_curve = await metrics_tracker.get_equity_curve_from_trades(days=report_days)
-                    if not equity_curve:
-                        equity_curve = await metrics_tracker.get_equity_curve(days=report_days)
-                    await send_daily_pnl_chart(
-                        equity_curve,
-                        initial_capital=SETTINGS["initial_capital"],
-                    )
-                    logger.info("v2.0: Daily PnL chart sent to Discord")
-                except Exception as e:
-                    logger.error(f"Daily PnL report error: {e}")
-                await asyncio.sleep(86400)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Daily report task error: {e}")
-                await asyncio.sleep(3600)
-
     async def run(self) -> None:
         """Ejecuta todas las tareas en paralelo."""
         self._running = True
@@ -453,7 +416,6 @@ class TradingApp:
             asyncio.create_task(self.run_monitor_task(), name="monitor"),
             asyncio.create_task(self.run_maintenance_task(), name="maintenance"),
             asyncio.create_task(self.run_status_task(), name="status"),
-            asyncio.create_task(self.run_daily_report_task(), name="daily_report"),
         ]
         
         try:
