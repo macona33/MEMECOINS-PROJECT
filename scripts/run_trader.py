@@ -84,12 +84,8 @@ class TradingApp:
         self.metrics_tracker = MetricsTracker(self.db)
         
         self._running = False
-        self._last_recalibration = datetime.now()
         self._last_regime_check = datetime.now()
-        self._recalibration_interval = timedelta(
-            hours=SETTINGS.get("recalibration_interval_hours", 24)
-        )
-        self._trades_since_recalibration = 0
+        # Recalibración: solo en local con scripts/recalibrate_standalone.py (DB actualizada)
     
     async def initialize(self) -> None:
         """Inicializa todos los componentes v2.0."""
@@ -231,8 +227,6 @@ class TradingApp:
             is_win = trade.pnl_usd > 0
             self.risk_manager.record_trade_result(trade.pnl_usd, is_win)
             
-            self._trades_since_recalibration += 1
-            
             await self._update_trade_features_outcome(trade)
             
             logger.info(
@@ -252,9 +246,6 @@ class TradingApp:
             )
             
             await self.risk_manager.save_state()
-            
-            if self._should_trigger_recalibration():
-                asyncio.create_task(self._run_recalibration())
     
     async def _update_trade_features_outcome(self, trade) -> None:
         """v2.0: Actualiza outcome en trade_features."""
@@ -274,62 +265,6 @@ class TradingApp:
             stop_executed=stop_executed,
             label=label,
         )
-    
-    def _should_trigger_recalibration(self) -> bool:
-        """v2.0: Determina si se debe ejecutar recalibración."""
-        new_trades_trigger = SETTINGS.get("new_trades_trigger", 30)
-        if self._trades_since_recalibration >= new_trades_trigger:
-            return True
-        
-        if datetime.now() - self._last_recalibration > self._recalibration_interval:
-            return True
-        
-        return False
-    
-    async def _run_recalibration(self) -> None:
-        """v2.0: Ejecuta recalibración de modelos."""
-        logger.info("v2.0: Running model recalibration...")
-        
-        try:
-            trade_features = await self.db.get_training_dataset(
-                days=SETTINGS.get("recalibration_window_days", 7)
-            )
-            
-            if len(trade_features) < SETTINGS.get("min_trades_for_recalibration", 30):
-                logger.info(
-                    f"v2.0: Insufficient data for recalibration "
-                    f"({len(trade_features)} trades)"
-                )
-                return
-            
-            hazard_trainer = self.hazard_model.get_trainer()
-            hazard_result = hazard_trainer.train(trade_features)
-            if hazard_result.success:
-                self.hazard_model.update_from_trainer()
-                await self.hazard_model.save_params()
-                logger.info(
-                    f"v2.0: Hazard model updated, "
-                    f"loss improved {hazard_result.improvement:.1%}"
-                )
-            
-            pump_trainer = self.pump_model.get_trainer()
-            pump_result = pump_trainer.train(trade_features)
-            if pump_result.success:
-                self.pump_model.update_from_trainer()
-                await self.pump_model.save_params()
-                logger.info(
-                    f"v2.0: Pump model updated, "
-                    f"loss improved {pump_result.improvement:.1%}"
-                )
-            
-            g_update = await self.pump_model.update_g_buckets(trade_features)
-            logger.info(f"v2.0: G buckets updated: {g_update.get('updated', [])}")
-            
-            self._last_recalibration = datetime.now()
-            self._trades_since_recalibration = 0
-            
-        except Exception as e:
-            logger.error(f"v2.0: Recalibration error: {e}")
     
     async def on_price_update(self, data: dict) -> None:
         """Callback para actualizaciones de precio."""
@@ -366,9 +301,6 @@ class TradingApp:
                         f"v2.0: Regime updated: {adjustments.regime.value}, "
                         f"EVS threshold={adjustments.evs_threshold:.4f}"
                     )
-                
-                if self._should_trigger_recalibration():
-                    await self._run_recalibration()
                 
                 await self.timeseries.cleanup_old_data(days_to_keep=30)
                 

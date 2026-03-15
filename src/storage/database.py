@@ -226,6 +226,13 @@ class DatabaseManager:
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             
+            -- v2.0: Estado de última recalibración (trigger: 30 trade_features nuevas desde aquí)
+            CREATE TABLE IF NOT EXISTS calibration_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_recalibration_at TIMESTAMP,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
             CREATE INDEX IF NOT EXISTS idx_tokens_detected ON tokens(detected_at);
             CREATE INDEX IF NOT EXISTS idx_trades_entry ON trades(entry_time);
             CREATE INDEX IF NOT EXISTS idx_price_snapshots ON price_snapshots(token_address, timestamp);
@@ -618,18 +625,68 @@ class DatabaseManager:
         """, (mfe, mae, pnl, int(stop_executed), label, trade_id))
         await self._connection.commit()
     
-    async def get_training_dataset(self, days: int = 30) -> List[Dict[str, Any]]:
-        """Obtiene dataset completo para recalibración de modelos."""
-        cursor = await self._connection.execute("""
-            SELECT tf.*, t.exit_reason, t.duration_minutes
-            FROM trade_features tf
-            JOIN trades t ON tf.trade_id = t.id
-            WHERE tf.recorded_at > datetime('now', ?)
-            AND tf.label IS NOT NULL
-            ORDER BY tf.recorded_at DESC
-        """, (f"-{days} days",))
+    async def get_training_dataset(self, days: Optional[int] = 30) -> List[Dict[str, Any]]:
+        """
+        Obtiene dataset completo para recalibración.
+        days=None: todas las trade_features con label (sin filtro de tiempo).
+        days=N: solo las de los últimos N días.
+        """
+        if days is None:
+            cursor = await self._connection.execute("""
+                SELECT tf.*, t.exit_reason, t.duration_minutes
+                FROM trade_features tf
+                JOIN trades t ON tf.trade_id = t.id
+                WHERE tf.label IS NOT NULL
+                ORDER BY tf.recorded_at DESC
+            """)
+        else:
+            cursor = await self._connection.execute("""
+                SELECT tf.*, t.exit_reason, t.duration_minutes
+                FROM trade_features tf
+                JOIN trades t ON tf.trade_id = t.id
+                WHERE tf.recorded_at > datetime('now', ?)
+                AND tf.label IS NOT NULL
+                ORDER BY tf.recorded_at DESC
+            """, (f"-{days} days",))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+    
+    async def get_last_recalibration_at(self) -> Optional[str]:
+        """Fecha/hora de la última recalibración (o None si nunca)."""
+        cursor = await self._connection.execute(
+            "SELECT last_recalibration_at FROM calibration_state WHERE id = 1"
+        )
+        row = await cursor.fetchone()
+        if row and row[0]:
+            return row[0]
+        return None
+    
+    async def set_last_recalibration_at(self, at: str = None) -> None:
+        """Registra que se acaba de ejecutar una recalibración."""
+        at = at or datetime.now().isoformat()
+        await self._connection.execute("""
+            INSERT OR REPLACE INTO calibration_state (id, last_recalibration_at, last_updated)
+            VALUES (1, ?, CURRENT_TIMESTAMP)
+        """, (at,))
+        await self._connection.commit()
+    
+    async def count_trade_features_since(self, since_iso: Optional[str] = None) -> int:
+        """
+        Cuenta trade_features con label.
+        since_iso=None: total con label.
+        since_iso=str: las que tienen recorded_at > since_iso (nuevas desde última recal).
+        """
+        if since_iso is None:
+            cursor = await self._connection.execute(
+                "SELECT COUNT(*) FROM trade_features WHERE label IS NOT NULL"
+            )
+        else:
+            cursor = await self._connection.execute(
+                "SELECT COUNT(*) FROM trade_features WHERE label IS NOT NULL AND recorded_at > ?",
+                (since_iso,)
+            )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
     
     async def get_trade_count(self) -> int:
         """Retorna número total de trades con features guardadas."""
