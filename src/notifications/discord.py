@@ -105,10 +105,9 @@ def notify_trade_closed(trade: Any) -> None:
 
 
 def _generate_pnl_chart(equity_curve: List[Dict[str, Any]], initial_capital: float) -> Path:
-    """Genera gráfico de PnL y retorna ruta al archivo PNG."""
+    """Genera gráfico de PnL (estilo Strategy: Trades vs PnL $) y retorna ruta al archivo PNG."""
     import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.dates as mdates
     import matplotlib.pyplot as plt
 
     if not equity_curve:
@@ -118,36 +117,42 @@ def _generate_pnl_chart(equity_curve: List[Dict[str, Any]], initial_capital: flo
         ax.set_ylim(0, 1)
         ax.axis("off")
     else:
-        dates = []
-        equities = []
-        for p in equity_curve:
-            if p.get("date"):
-                try:
-                    dates.append(datetime.strptime(p["date"], "%Y-%m-%d"))
-                except (ValueError, TypeError):
-                    continue
-            else:
-                dates.append(datetime.now())
-            equities.append(p.get("equity", initial_capital))
-
-        if not dates:
-            dates = [datetime.now()]
-            equities = [initial_capital]
+        trades_t = list(range(len(equity_curve)))
+        pnl_usd = [(p.get("equity", initial_capital) - initial_capital) for p in equity_curve]
 
         fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(dates, equities, color="#00d26a", linewidth=2, marker="o", markersize=4)
-        ax.axhline(y=initial_capital, color="#666", linestyle="--", alpha=0.7, label="Capital inicial")
-        ax.set_ylabel("Equity (USD)", fontsize=11)
-        ax.set_xlabel("Fecha", fontsize=11)
-        ax.set_title("Paper Trading - Curva de Equity", fontsize=13)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc="upper left")
+        fig.patch.set_facecolor("#f5f5f5")
+        ax.set_facecolor("#f0f0f0")
+        ax.tick_params(colors="#333")
+        ax.xaxis.label.set_color("#333")
+        ax.yaxis.label.set_color("#333")
+        ax.title.set_color("#2d2d2d")
+
+        ax.plot(
+            trades_t,
+            pnl_usd,
+            color="#2dd4bf",
+            linewidth=2,
+            marker="o",
+            markersize=5,
+            label="portfolio pnl",
+        )
+        ax.axhline(y=0, color="#555", linestyle="--", linewidth=1)
+        ax.set_ylabel("PnL ($)", fontsize=11)
+        ax.set_xlabel("Trades (T)", fontsize=11)
+        ax.set_title("Strategy", fontsize=13)
+        ax.grid(True, alpha=0.4, color="#999")
+        ax.legend(loc="upper left", framealpha=0.9)
+        ax.set_xlim(left=-0.5)
+        if pnl_usd:
+            y_min = min(min(pnl_usd), 0)
+            y_max = max(max(pnl_usd), 0)
+            margin = (y_max - y_min) * 0.05 or 10
+            ax.set_ylim(bottom=y_min - margin, top=y_max + margin)
         fig.tight_layout()
 
     path = Path(tempfile.gettempdir()) / f"pnl_chart_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    fig.savefig(path, dpi=100, bbox_inches="tight")
+    fig.savefig(path, dpi=100, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
     return path
 

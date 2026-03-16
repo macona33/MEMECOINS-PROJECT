@@ -124,8 +124,8 @@ class MetricsTracker:
         
         hit_rate = pump_count / total if total > 0 else 0
         
-        pnl_values = [t.get("pnl_pct", 0) for t in trades]
-        pnl_usd_values = [t.get("pnl_usd", 0) for t in trades]
+        pnl_values = [(t.get("pnl_pct") or 0) for t in trades]
+        pnl_usd_values = [(t.get("pnl_usd") or 0) for t in trades]
         
         max_dd = self._calculate_max_drawdown(pnl_values)
         
@@ -168,7 +168,7 @@ class MetricsTracker:
         """
         if not returns:
             return 0.0
-        
+        returns = [float(r) if r is not None else 0.0 for r in returns]
         cumulative = np.cumsum(returns)
         running_max = np.maximum.accumulate(cumulative)
         drawdowns = running_max - cumulative
