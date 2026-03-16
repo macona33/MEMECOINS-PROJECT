@@ -298,7 +298,7 @@ class ModelUpdater:
                 "reason": f"Hit rate {hit_rate:.1%} above target, can be more aggressive",
             }
         
-        avg_pnl = np.mean([d["pnl_pct"] for d in data])
+        avg_pnl = float(np.mean([d.get("pnl_pct") or 0 for d in data]))
         if avg_pnl < 0:
             current_kelly = SETTINGS["kelly_gamma"]
             suggestions["kelly_gamma"] = {
@@ -331,6 +331,7 @@ class ModelUpdater:
             [d["is_pump"] for d in data]
         )
         
+        pnl_values = [d.get("pnl_pct") or 0 for d in data]
         return {
             "samples": len(data),
             "hazard_model": {
@@ -342,7 +343,7 @@ class ModelUpdater:
                 "calibration": calibration_pump,
             },
             "overall_hit_rate": sum(1 for d in data if d["is_pump"]) / len(data),
-            "overall_avg_pnl": np.mean([d["pnl_pct"] for d in data]),
+            "overall_avg_pnl": float(np.mean(pnl_values)),
         }
     
     def _check_calibration(
