@@ -73,13 +73,16 @@ async def view_trades(days: int = 30):
                 except:
                     pass
             
-            duration_display = real_duration if real_duration else trade.get('duration_minutes', 0)
+            duration_display = real_duration if (real_duration is not None) else trade.get("duration_minutes")
             
             print(f"--- Trade #{i} {result_emoji} ---")
             print(f"  Token:          {trade.get('token_address', 'N/A')[:20]}...")
             print(f"  Entry:          {entry_time}")
             print(f"  Exit:           {exit_time}")
-            print(f"  Duration:       {duration_display:.1f} minutos")
+            if duration_display is None:
+                print("  Duration:       N/A")
+            else:
+                print(f"  Duration:       {float(duration_display):.1f} minutos")
             print(f"  ")
             print(f"  Entry Price:    ${trade.get('entry_price', 0):.10f}")
             print(f"  Exit Price:     ${trade.get('exit_price', 0):.10f}")
