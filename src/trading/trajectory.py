@@ -40,6 +40,8 @@ class TrajectoryMonitor:
         self._running = False
         self._poll_interval = SETTINGS["price_poll_seconds"]
         self._callbacks: List[Callable] = []
+        # Primera vez sin precio válido consecutivo por mint (reset al obtener precio > 0)
+        self._price_stale_since: Dict[str, datetime] = {}
     
     def on_price_update(self, callback: Callable) -> None:
         """Registra callback para actualizaciones de precio."""
@@ -97,9 +99,39 @@ class TrajectoryMonitor:
         price = prices.get(token_address, 0)
         
         if price <= 0:
+            now = datetime.now()
+            stale_timeout = float(SETTINGS.get("price_stale_timeout_seconds", 3600))
+            first_fail = self._price_stale_since.get(token_address)
+            if first_fail is None:
+                self._price_stale_since[token_address] = now
+                first_fail = now
+            elapsed = (now - first_fail).total_seconds()
+            if elapsed >= stale_timeout:
+                self._price_stale_since.pop(token_address, None)
+                exit_px = trade.current_price or trade.entry_price
+                logger.warning(
+                    f"Price feed stale {elapsed:.0f}s >= {stale_timeout:.0f}s for {token_address}; "
+                    f"closing at last known ${exit_px:.8f} (price_feed_timeout)"
+                )
+                await self.simulator.close_trade(
+                    token_address,
+                    exit_px,
+                    "price_feed_timeout",
+                )
+                return {
+                    "token_address": token_address,
+                    "symbol": trade.symbol,
+                    "price": exit_px,
+                    "pnl_pct": trade.pnl_pct,
+                    "mfe": trade.current_mfe,
+                    "mae": trade.current_mae,
+                    "close_reason": "price_feed_timeout",
+                }
             logger.warning(f"Could not get price for {token_address}")
             return None
-        
+
+        self._price_stale_since.pop(token_address, None)
+
         close_reason = await self.simulator.update_trade(
             token_address=token_address,
             current_price=price,
@@ -131,7 +163,13 @@ class TrajectoryMonitor:
         trades = self.simulator.get_active_trades()
         
         if not trades:
+            self._price_stale_since.clear()
             return {"trades_updated": 0, "trades_closed": 0}
+        
+        active_addrs = {t.token_address for t in trades}
+        for addr in list(self._price_stale_since.keys()):
+            if addr not in active_addrs:
+                self._price_stale_since.pop(addr, None)
         
         updates = []
         closed = []

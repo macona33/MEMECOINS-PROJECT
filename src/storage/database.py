@@ -232,11 +232,29 @@ class DatabaseManager:
                 last_recalibration_at TIMESTAMP,
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS execution_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_mint TEXT NOT NULL,
+                amount_in_lamports INTEGER,
+                expected_out_raw INTEGER,
+                real_out_raw INTEGER,
+                slippage_expected_bps INTEGER,
+                slippage_real REAL,
+                price_impact_pct REAL,
+                tx_signature TEXT,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                execution_time_ms INTEGER,
+                mode TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             
             CREATE INDEX IF NOT EXISTS idx_tokens_detected ON tokens(detected_at);
             CREATE INDEX IF NOT EXISTS idx_trades_entry ON trades(entry_time);
             CREATE INDEX IF NOT EXISTS idx_price_snapshots ON price_snapshots(token_address, timestamp);
             CREATE INDEX IF NOT EXISTS idx_trade_features_trade ON trade_features(trade_id);
+            CREATE INDEX IF NOT EXISTS idx_execution_logs_created ON execution_logs(created_at);
         """)
         await self._connection.commit()
     
@@ -785,3 +803,30 @@ class DatabaseManager:
         """, (token_address,))
         row = await cursor.fetchone()
         return row[0] if row else None
+
+    # ============== FASE 3: EXECUTION LOGS (Jupiter) ==============
+
+    async def insert_execution_log(self, row: Dict[str, Any]) -> int:
+        """Inserta un registro de ejecución on-chain (quote/swap)."""
+        cursor = await self._connection.execute("""
+            INSERT INTO execution_logs (
+                token_mint, amount_in_lamports, expected_out_raw, real_out_raw,
+                slippage_expected_bps, slippage_real, price_impact_pct,
+                tx_signature, status, error_message, execution_time_ms, mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            row.get("token_mint"),
+            row.get("amount_in_lamports"),
+            row.get("expected_out_raw"),
+            row.get("real_out_raw"),
+            row.get("slippage_expected_bps"),
+            row.get("slippage_real"),
+            row.get("price_impact_pct"),
+            row.get("tx_signature"),
+            row.get("status"),
+            row.get("error_message"),
+            row.get("execution_time_ms"),
+            row.get("mode"),
+        ))
+        await self._connection.commit()
+        return cursor.lastrowid

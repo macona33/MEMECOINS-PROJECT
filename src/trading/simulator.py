@@ -5,7 +5,7 @@ Simula entrada y salida de posiciones sin capital real.
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 from loguru import logger
@@ -15,6 +15,9 @@ from src.data_sources import DexScreenerClient
 from src.models import EVSCalculator
 from .kelly import KellyCalculator, PositionSize
 from config.settings import SETTINGS
+
+if TYPE_CHECKING:
+    from src.trading.onchain_bridge import BotOnchainBridge
 
 
 class TradeStatus(Enum):
@@ -51,6 +54,8 @@ class SimulatedTrade:
     p_rug_at_entry: float = 0.0
     p_pump_at_entry: float = 0.0
     trade_id: Optional[int] = None  # ID en tabla trades (para trade_features)
+    onchain_entry_sig: Optional[str] = None
+    onchain_exit_sig: Optional[str] = None
 
     @property
     def pnl_pct(self) -> float:
@@ -109,12 +114,14 @@ class TradeSimulator:
         dex_client: Optional[DexScreenerClient] = None,
         evs_calculator: Optional[EVSCalculator] = None,
         kelly_calculator: Optional[KellyCalculator] = None,
+        onchain_bridge: Optional["BotOnchainBridge"] = None,
     ):
         self.db = db
         self.dex_client = dex_client or DexScreenerClient()
         self.evs_calculator = evs_calculator or EVSCalculator()
         self.kelly_calculator = kelly_calculator or KellyCalculator()
-        
+        self._onchain = onchain_bridge
+
         self._active_trades: Dict[str, SimulatedTrade] = {}
         self._capital = SETTINGS["initial_capital"]
         self._allocated = 0.0
@@ -239,7 +246,22 @@ class TradeSimulator:
             p_rug_at_entry=evs_result.p_rug,
             p_pump_at_entry=evs_result.p_pump,
         )
-        
+
+        if self._onchain and self._onchain.is_active():
+            ok, sig, err = await self._onchain.execute_buy_for_open(
+                token_address,
+                position.position_usd,
+                self.dex_client,
+                self.db,
+            )
+            if not ok:
+                logger.error(
+                    "On-chain BUY falló; trade no abierto (paper sin posición): {}",
+                    err,
+                )
+                return None
+            trade.onchain_entry_sig = sig
+
         self._active_trades[token_address] = trade
         self._allocated += position.position_usd
 
@@ -336,7 +358,17 @@ class TradeSimulator:
         trade = self._active_trades.get(token_address)
         if not trade:
             return None
-        
+
+        if self._onchain and self._onchain.is_active():
+            ok, sig, err = await self._onchain.execute_sell_for_close(token_address, self.db)
+            if not ok:
+                logger.error(
+                    "On-chain SELL al cerrar falló (paper/db se cierran igual): {}",
+                    err,
+                )
+            elif sig:
+                trade.onchain_exit_sig = sig
+
         trade.exit_price = exit_price
         trade.exit_time = datetime.now()
         trade.exit_reason = reason

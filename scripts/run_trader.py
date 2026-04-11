@@ -17,6 +17,7 @@ from src.data_sources import DexScreenerClient, SolscanClient
 from src.ingestion import TokenScanner, TokenFilter, FeatureExtractor
 from src.models import HazardModel, PumpModel, EVSCalculator
 from src.trading import KellyCalculator, TradeSimulator, TrajectoryMonitor, RiskManager
+from src.trading.onchain_bridge import BotOnchainBridge
 from src.notifications import notify_trade_opened, notify_trade_closed
 from src.calibration import LabelGenerator, ModelUpdater, MetricsTracker
 from src.market import RegimeDetector
@@ -62,11 +63,13 @@ class TradingApp:
         self.regime_detector = RegimeDetector()
         
         self.kelly_calculator = KellyCalculator()
+        self.onchain_bridge = BotOnchainBridge()
         self.simulator = TradeSimulator(
             db=self.db,
             dex_client=self.dex_client,
             evs_calculator=self.evs_calculator,
             kelly_calculator=self.kelly_calculator,
+            onchain_bridge=self.onchain_bridge,
         )
         self.trajectory_monitor = TrajectoryMonitor(
             db=self.db,
@@ -133,6 +136,17 @@ class TradingApp:
         logger.info(f"Active trades: {self.simulator.active_trade_count}")
         logger.info(f"Market regime: {self.regime_detector.current_regime.value}")
         logger.info(f"Risk level: {self.risk_manager.get_risk_level()}")
+        if self.onchain_bridge.is_active():
+            logger.warning(
+                "On-chain ACTIVO (BOT_ONCHAIN_EXECUTION): swaps reales al abrir/cerrar. "
+                "Tope SOL por trade ≈ {:.4f}",
+                self.onchain_bridge.max_sol_per_trade(),
+            )
+        else:
+            logger.info(
+                "On-chain desactivado (paper o sin BOT_ONCHAIN_EXECUTION=1); "
+                "solo simulación en DB."
+            )
     
     async def process_token(self, token: dict) -> None:
         """Procesa token nuevo y abre trade si cumple criterios v2.0."""
@@ -406,10 +420,11 @@ async def main():
 if __name__ == "__main__":
     print("""
     ====================================================
-    |   SOLANA MEMECOIN PAPER TRADING SYSTEM v2.0      |
+    |   SOLANA MEMECOIN TRADING SYSTEM v2.0            |
     |                                                  |
     |   Adaptive system with stable edge               |
-    |   Running in PAPER TRADING mode - No real money  |
+    |   On-chain: solo si .env BOT_ONCHAIN_EXECUTION=1|
+    |   y TRADING_MODE=live + LIVE_TRADING_ENABLED   |
     |   Press Ctrl+C to stop                           |
     ====================================================
     

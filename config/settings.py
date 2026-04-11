@@ -52,6 +52,8 @@ SETTINGS = {
     "scan_interval_seconds": 120,
     "price_poll_seconds": 30,
     "dexscreener_rate_limit": 30,
+    # Si DexScreener no devuelve precio > 0 durante este tiempo, cerrar el trade (libera capital)
+    "price_stale_timeout_seconds": 3600,
     
     # ============== RECALIBRACIÓN v2.0 ==============
     "min_trades_for_recalibration": 30,  # v2.0: Reducido de 50 a 30
@@ -110,6 +112,26 @@ SETTINGS = {
     "target_hit_rate": 0.60,
     "max_drawdown_tolerance": 0.40,
     "min_sharpe_ratio": 0.5,
+
+    # ============== FASE 3 — ExecutionEngine_v1_Jupiter + bot on-chain ==============
+    "bot_onchain_execution": False,
+    "max_onchain_sol_per_trade": 5,
+    "min_onchain_sol_per_trade": 0.001,
+    "sol_price_usd_fallback": 140.0,
+    "sync_execution_slippage_with_paper": True,
+    "trading_mode": "paper",
+    "live_trading_enabled": False,
+    # quote-api.jup.ag ya no tiene DNS; API pública en lite-api (v1 swap).
+    "jupiter_api_base": "https://lite-api.jup.ag/swap/v1",
+    "jupiter_quote_timeout_s": 20.0,
+    "jupiter_swap_timeout_s": 30.0,
+    "solana_rpc_timeout_s": 30.0,
+    "execution_slippage_bps": 400,
+    "execution_max_price_impact": 0.05,
+    "execution_trade_cooldown_s": 7.0,
+    "execution_rpc_max_retries": 2,
+    "execution_confirm_timeout_s": 20.0,
+    "execution_max_consecutive_failures": 2,
 }
 
 DATABASE_PATH = DATA_DIR / "tokens.db"
