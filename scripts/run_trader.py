@@ -126,11 +126,22 @@ class TradingApp:
         self.trajectory_monitor.on_price_update(self.on_price_update)
         
         logger.info("Trading application v2.0 initialized")
-        equity = self.risk_manager.state.current_equity
-        logger.info(
-            f"Capital: ${equity:,.2f}"
-            + (f" (inicial: ${SETTINGS['initial_capital']:,})" if equity != SETTINGS["initial_capital"] else "")
-        )
+        equity = float(self.risk_manager.state.current_equity)
+        initial = float(SETTINGS["initial_capital"])
+        if self.onchain_bridge.is_active():
+            logger.info(
+                "Equity modelo (Kelly / tabla risk_state, no es saldo de wallet): "
+                "${:,.2f} (referencia inicial paper: ${:,.2f}). "
+                "Riesgo on-chain acotado por SOL en cartera y tope {:.4f} SOL por trade.",
+                equity,
+                initial,
+                self.onchain_bridge.max_sol_per_trade(),
+            )
+        else:
+            logger.info(
+                f"Capital paper (Kelly / risk_state): ${equity:,.2f}"
+                + (f" (inicial: ${initial:,.2f})" if equity != initial else "")
+            )
         logger.info(f"Kelly gamma: {SETTINGS['kelly_gamma']} (v2.0)")
         logger.info(f"Max position: {SETTINGS['max_position_pct']:.1%} (v2.0)")
         logger.info(f"Active trades: {self.simulator.active_trade_count}")
@@ -138,9 +149,7 @@ class TradingApp:
         logger.info(f"Risk level: {self.risk_manager.get_risk_level()}")
         if self.onchain_bridge.is_active():
             logger.warning(
-                "On-chain ACTIVO (BOT_ONCHAIN_EXECUTION): swaps reales al abrir/cerrar. "
-                "Tope SOL por trade ≈ {:.4f}",
-                self.onchain_bridge.max_sol_per_trade(),
+                "On-chain ACTIVO (BOT_ONCHAIN_EXECUTION): swaps reales al abrir/cerrar."
             )
         else:
             logger.info(

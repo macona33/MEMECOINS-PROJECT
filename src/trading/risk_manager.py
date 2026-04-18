@@ -64,7 +64,7 @@ class RiskManager:
         self._consecutive_loss_threshold = SETTINGS.get("consecutive_loss_threshold", 3)
         self._consecutive_loss_size_mult = SETTINGS.get("consecutive_loss_size_mult", 0.50)
         
-        self._initial_capital = SETTINGS.get("initial_capital", 10000)
+        self._initial_capital = float(SETTINGS.get("initial_capital", 10000))
     
     def set_database(self, db: DatabaseManager) -> None:
         """Configura conexión a base de datos."""
@@ -77,13 +77,50 @@ class RiskManager:
             self._state = RiskState(
                 current_drawdown=0,
                 peak_equity=self._initial_capital,
-                current_equity=self._initial_capital,
+                current_equity=float(self._initial_capital),
                 consecutive_losses=0,
                 frozen_until=None,
                 gamma_multiplier=1.0,
             )
         return self._state
     
+    def _equity_sanity_cap_usd(self) -> float:
+        """Por encima de esto se asume risk_state corrupto (p. ej. pnl_usd bugueado acumulado)."""
+        return max(self._initial_capital * 100.0, 250_000.0)
+
+    async def _reset_corrupted_equity_if_needed(self) -> None:
+        if not self._db or not self._state:
+            return
+        cap = self._equity_sanity_cap_usd()
+        ce = float(self._state.current_equity)
+        if ce <= cap:
+            return
+        logger.warning(
+            "risk_state: equity en DB ({:,.2f} USD) supera techo razonable ({:,.2f}); "
+            "reseteando a initial_capital={:,.2f} (suele deberse a un trade con pnl_usd corrupto).",
+            ce,
+            cap,
+            self._initial_capital,
+        )
+        self._state = RiskState(
+            current_drawdown=0.0,
+            peak_equity=self._initial_capital,
+            current_equity=self._initial_capital,
+            consecutive_losses=0,
+            frozen_until=None,
+            gamma_multiplier=1.0,
+        )
+        await self._db.update_risk_state(
+            {
+                "current_drawdown": 0.0,
+                "peak_equity": self._initial_capital,
+                "current_equity": self._initial_capital,
+                "consecutive_losses": 0,
+                "frozen_until": None,
+                "gamma_multiplier": 1.0,
+            }
+        )
+
     async def load_state(self) -> None:
         """Carga estado de riesgo desde la base de datos."""
         if not self._db:
@@ -100,15 +137,17 @@ class RiskManager:
         
         self._state = RiskState(
             current_drawdown=db_state.get("current_drawdown", 0),
-            peak_equity=db_state.get("peak_equity", self._initial_capital),
-            current_equity=db_state.get("current_equity", self._initial_capital),
+            peak_equity=float(db_state.get("peak_equity", self._initial_capital)),
+            current_equity=float(db_state.get("current_equity", self._initial_capital)),
             consecutive_losses=db_state.get("consecutive_losses", 0),
             frozen_until=frozen_until,
             gamma_multiplier=db_state.get("gamma_multiplier", 1.0),
         )
-        
+        await self._reset_corrupted_equity_if_needed()
+
         logger.info(
-            f"Loaded risk state: drawdown={self._state.current_drawdown:.1%}, "
+            f"Loaded risk state: equity=${self._state.current_equity:,.2f}, "
+            f"drawdown={self._state.current_drawdown:.1%}, "
             f"gamma_mult={self._state.gamma_multiplier:.2f}, "
             f"consecutive_losses={self._state.consecutive_losses}"
         )
