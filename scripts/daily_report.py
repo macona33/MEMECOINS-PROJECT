@@ -16,6 +16,7 @@ from src.storage import DatabaseManager
 from src.models import HazardModel, PumpModel
 from src.calibration import MetricsTracker, ModelUpdater, LabelGenerator
 from src.notifications import send_daily_pnl_chart
+from src.trading.onchain_bridge import BotOnchainBridge
 from config.settings import SETTINGS
 
 logger.remove()
@@ -26,6 +27,28 @@ logger.add(
 )
 
 
+async def reset_paper_risk_equity() -> None:
+    """Restaura risk_state (equity paper Kelly) al capital inicial configurado."""
+    db = DatabaseManager()
+    await db.connect()
+    try:
+        await db.get_risk_state()
+        ic = float(SETTINGS["initial_capital"])
+        await db.update_risk_state(
+            {
+                "current_equity": ic,
+                "peak_equity": ic,
+                "current_drawdown": 0.0,
+                "consecutive_losses": 0,
+                "frozen_until": None,
+                "gamma_multiplier": 1.0,
+            }
+        )
+        print(f"Paper risk_state reiniciado: current_equity=peak_equity={ic:,.2f} USD")
+    finally:
+        await db.close()
+
+
 async def generate_daily_report(days: int = 7):
     """Genera reporte completo de rendimiento."""
     
@@ -33,6 +56,8 @@ async def generate_daily_report(days: int = 7):
     await db.connect()
     
     try:
+        onchain = BotOnchainBridge()
+        live_reporting = onchain.is_active()
         metrics_tracker = MetricsTracker(db)
         
         hazard_model = HazardModel()
@@ -49,9 +74,19 @@ async def generate_daily_report(days: int = 7):
         )
         
         print("\n" + "=" * 60)
-        print("       PAPER TRADING DAILY REPORT")
+        if live_reporting:
+            print("       DAILY REPORT — LIVE (wallet) + modelo (DB)")
+        else:
+            print("       DAILY REPORT — PAPER (modelo / equity DB)")
         print(f"       Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         print("=" * 60)
+        if live_reporting:
+            print(
+                "  [Live] Gráfico Discord = flujo neto aprox. desde execution_logs (SOL→USD ref.)."
+            )
+            print(
+                "  [Modelo] Bloques siguientes = métricas simulador (pnl_usd en trades puede divergir de wallet)."
+            )
         
         today_metrics = await metrics_tracker.calculate_daily_metrics()
         
@@ -174,10 +209,24 @@ async def generate_daily_report(days: int = 7):
         report_data["today"] = today_metrics
         report_data["success_criteria"] = success
 
-        equity_curve = await metrics_tracker.get_equity_curve_from_trades(days=days)
-        if not equity_curve:
-            equity_curve = await metrics_tracker.get_equity_curve(days=days)
-        await send_daily_pnl_chart(equity_curve, initial_capital=SETTINGS["initial_capital"])
+        if live_reporting:
+            equity_curve = await metrics_tracker.get_live_wallet_equity_curve_from_execution_logs(
+                days=days
+            )
+            await send_daily_pnl_chart(
+                equity_curve,
+                initial_capital=0.0,
+                report_mode="live",
+            )
+        else:
+            equity_curve = await metrics_tracker.get_equity_curve_from_trades(days=days)
+            if not equity_curve:
+                equity_curve = await metrics_tracker.get_equity_curve(days=days)
+            await send_daily_pnl_chart(
+                equity_curve,
+                initial_capital=SETTINGS["initial_capital"],
+                report_mode="paper",
+            )
 
         report_file = report_dir / f"report_{date.today().isoformat()}.json"
         with open(report_file, "w") as f:
@@ -260,10 +309,17 @@ def main():
         action="store_true",
         help="Run model recalibration"
     )
+    parser.add_argument(
+        "--reset-paper-equity",
+        action="store_true",
+        help="Resetea risk_state (equity/peak paper) al initial_capital de SETTINGS",
+    )
     
     args = parser.parse_args()
     
-    if args.recalibrate:
+    if args.reset_paper_equity:
+        asyncio.run(reset_paper_risk_equity())
+    elif args.recalibrate:
         asyncio.run(run_recalibration())
     else:
         asyncio.run(generate_daily_report(days=args.days))

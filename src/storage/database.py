@@ -257,6 +257,21 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_execution_logs_created ON execution_logs(created_at);
         """)
         await self._connection.commit()
+        await self._ensure_execution_logs_execution_side_column()
+    
+    async def _ensure_execution_logs_execution_side_column(self) -> None:
+        """Migración ligera: lado BUY/SELL para curvas y reportes live."""
+        if not self._connection:
+            return
+        cursor = await self._connection.execute("PRAGMA table_info(execution_logs)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if "execution_side" in cols:
+            return
+        await self._connection.execute(
+            "ALTER TABLE execution_logs ADD COLUMN execution_side TEXT"
+        )
+        await self._connection.commit()
+        logger.info("Migración DB: execution_logs.execution_side añadida")
     
     # ============== TOKEN OPERATIONS ==============
     
@@ -825,8 +840,9 @@ class DatabaseManager:
             INSERT INTO execution_logs (
                 token_mint, amount_in_lamports, expected_out_raw, real_out_raw,
                 slippage_expected_bps, slippage_real, price_impact_pct,
-                tx_signature, status, error_message, execution_time_ms, mode
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tx_signature, status, error_message, execution_time_ms, mode,
+                execution_side
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             row.get("token_mint"),
             row.get("amount_in_lamports"),
@@ -840,6 +856,46 @@ class DatabaseManager:
             row.get("error_message"),
             row.get("execution_time_ms"),
             row.get("mode"),
+            row.get("execution_side"),
         ))
         await self._connection.commit()
         return cursor.lastrowid
+
+    async def get_live_wallet_execution_events(self, days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Swaps live confirmados (SUCCESS), orden cronológico, para PnL aprox. en SOL.
+        """
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM execution_logs
+            WHERE created_at > datetime('now', ?)
+              AND mode = 'live'
+              AND status = 'SUCCESS'
+              AND IFNULL(tx_signature, '') NOT IN ('', 'SIMULATED')
+            ORDER BY datetime(created_at) ASC, id ASC
+            """,
+            (f"-{days} days",),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_live_execution_logs_by_token(
+        self, days: int = 30
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Agrupa logs live (cualquier status) por token_mint para vistas de consola."""
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM execution_logs
+            WHERE created_at > datetime('now', ?)
+              AND mode = 'live'
+            ORDER BY datetime(created_at) ASC, id ASC
+            """,
+            (f"-{days} days",),
+        )
+        rows = await cursor.fetchall()
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            d = dict(r)
+            mint = d.get("token_mint") or ""
+            out.setdefault(mint, []).append(d)
+        return out

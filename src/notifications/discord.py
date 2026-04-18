@@ -181,7 +181,12 @@ def notify_trade_closed(trade: Any) -> None:
     asyncio.create_task(_send_webhook(embed))
 
 
-def _generate_pnl_chart(equity_curve: List[Dict[str, Any]], initial_capital: float) -> Path:
+def _generate_pnl_chart(
+    equity_curve: List[Dict[str, Any]],
+    initial_capital: float,
+    *,
+    y_axis_label: str = "PnL ($)",
+) -> Path:
     """Genera gráfico de PnL (estilo Strategy: Trades vs PnL $) y retorna ruta al archivo PNG."""
     import matplotlib
     matplotlib.use("Agg")
@@ -215,7 +220,7 @@ def _generate_pnl_chart(equity_curve: List[Dict[str, Any]], initial_capital: flo
             label="portfolio pnl",
         )
         ax.axhline(y=0, color="#555", linestyle="--", linewidth=1)
-        ax.set_ylabel("PnL ($)", fontsize=11)
+        ax.set_ylabel(y_axis_label, fontsize=11)
         ax.set_xlabel("Trades (T)", fontsize=11)
         ax.set_title("Strategy", fontsize=13)
         ax.grid(True, alpha=0.4, color="#999")
@@ -237,6 +242,9 @@ def _generate_pnl_chart(equity_curve: List[Dict[str, Any]], initial_capital: flo
 async def send_daily_pnl_chart(
     equity_curve: List[Dict[str, Any]],
     initial_capital: float = 10000,
+    *,
+    report_mode: str = "paper",
+    chart_ylabel: Optional[str] = None,
 ) -> None:
     """
     Genera gráfico de PnL y lo envía a Discord.
@@ -246,12 +254,26 @@ async def send_daily_pnl_chart(
         logger.debug("Discord webhook not configured, skipping PnL chart")
         return
     try:
-        path = _generate_pnl_chart(equity_curve, initial_capital)
+        ylabel = chart_ylabel or (
+            "PnL aprox. (USD, SOL×ref.)" if report_mode == "live" else "PnL ($)"
+        )
+        path = _generate_pnl_chart(equity_curve, initial_capital, y_axis_label=ylabel)
         import aiohttp
         last_equity = equity_curve[-1].get("equity", initial_capital) if equity_curve else initial_capital
+        if report_mode == "live":
+            title = "📊 Reporte Diario – Live (wallet / swaps)"
+            desc = (
+                f"Flujo neto acumulado aprox. en USD (no es el saldo total de la wallet): "
+                f"**${last_equity:,.2f}** · referencia base en el gráfico: **${initial_capital:,.2f}**"
+            )
+        else:
+            title = "📊 Reporte Diario – Paper (modelo / equity DB)"
+            desc = (
+                f"Equity modelo: **${last_equity:,.2f}** (inicial paper: **${initial_capital:,.2f}**)"
+            )
         embed = {
-            "title": "📊 Reporte Diario - Paper Trading",
-            "description": f"Equity actual: **${last_equity:,.2f}** (inicial: ${initial_capital:,.2f})",
+            "title": title,
+            "description": desc,
             "color": 0x00D26A,
             "timestamp": datetime.now().isoformat(),
             "image": {"url": "attachment://pnl_chart.png"},

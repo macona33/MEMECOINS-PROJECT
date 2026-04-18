@@ -10,6 +10,18 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.storage import DatabaseManager
+from src.trading.onchain_bridge import BotOnchainBridge
+
+
+def _fmt_exec_log(log: dict) -> str:
+    side = log.get("execution_side") or "?"
+    st = log.get("status") or "?"
+    sig = log.get("tx_signature") or ""
+    sig_short = (sig[:12] + "…") if len(sig) > 14 else (sig or "—")
+    return (
+        f"    [{side}] {st} | in={log.get('amount_in_lamports')} "
+        f"real_out={log.get('real_out_raw')} | {sig_short}"
+    )
 
 
 async def view_trades(days: int = 30):
@@ -20,6 +32,9 @@ async def view_trades(days: int = 30):
     
     try:
         trades = await db.get_trade_history(days=days)
+        onchain = BotOnchainBridge()
+        live_ctx = onchain.is_active()
+        logs_by_token = await db.get_live_execution_logs_by_token(days=days)
         
         if not trades:
             print("\nNo hay trades registrados en el periodo.\n")
@@ -28,6 +43,14 @@ async def view_trades(days: int = 30):
         print(f"\n{'='*80}")
         print(f"  HISTORIAL DE TRADES - Ultimos {days} dias")
         print(f"  Total: {len(trades)} trades")
+        if live_ctx:
+            print(
+                "  Contexto: LIVE on-chain activo — cada trade muestra modelo (DB) y, si existe, execution_logs."
+            )
+        else:
+            print(
+                "  Contexto: on-chain inactivo en .env — métricas modelo; logs live pueden estar vacíos."
+            )
         print(f"{'='*80}\n")
         
         for i, trade in enumerate(trades, 1):
@@ -75,7 +98,7 @@ async def view_trades(days: int = 30):
             
             duration_display = real_duration if (real_duration is not None) else trade.get("duration_minutes")
             
-            print(f"--- Trade #{i} {result_emoji} ---")
+            print(f"--- Trade #{i} {result_emoji} (modelo / DB) ---")
             print(f"  Token:          {trade.get('token_address', 'N/A')[:20]}...")
             print(f"  Entry:          {entry_time}")
             print(f"  Exit:           {exit_time}")
@@ -100,6 +123,14 @@ async def view_trades(days: int = 30):
             print(f"  EVS_adj:        {trade.get('evs_at_entry', 0):.4f}")
             print(f"  P_rug:          {trade.get('p_rug_at_entry', 0):.1%}")
             print(f"  P_pump:         {trade.get('p_pump_at_entry', 0):.1%}")
+            mint = trade.get("token_address") or ""
+            ex_logs = logs_by_token.get(mint, [])
+            if ex_logs:
+                print(f"  --- Wallet live (execution_logs, mode=live) — {len(ex_logs)} evento(s) ---")
+                for lg in ex_logs:
+                    print(_fmt_exec_log(lg))
+            elif live_ctx:
+                print("  --- Wallet live: sin execution_logs para este mint en la ventana ---")
             print(f"\n")
         
         print(f"{'='*80}")

@@ -338,7 +338,9 @@ class ExecutionEngineV1Jupiter:
                     error=str(e),
                     execution_time_ms=ms,
                 )
-                await self._persist(db, persist_token_mint, persist_amount_in, mode, res)
+                await self._persist(
+                    db, persist_token_mint, persist_amount_in, mode, res, side_label
+                )
                 return res
 
             price_impact = self._parse_price_impact(quote)
@@ -358,7 +360,9 @@ class ExecutionEngineV1Jupiter:
                     error=err,
                     execution_time_ms=ms,
                 )
-                await self._persist(db, persist_token_mint, persist_amount_in, mode, res)
+                await self._persist(
+                    db, persist_token_mint, persist_amount_in, mode, res, side_label
+                )
                 return res
 
             expected_out = int(quote["outAmount"])
@@ -389,7 +393,9 @@ class ExecutionEngineV1Jupiter:
                     f"expected_out={expected_out} sim_real_out={real_est} "
                     f"slip_real={slip_real:.4f} impact={price_impact:.4f}"
                 )
-                await self._persist(db, persist_token_mint, persist_amount_in, mode, res)
+                await self._persist(
+                    db, persist_token_mint, persist_amount_in, mode, res, side_label
+                )
                 return res
 
             rpc_url = cfg["rpc_url"]
@@ -446,7 +452,9 @@ class ExecutionEngineV1Jupiter:
                         error=chk,
                         execution_time_ms=ms,
                     )
-                    await self._persist(db, persist_token_mint, persist_amount_in, mode, res)
+                    await self._persist(
+                        db, persist_token_mint, persist_amount_in, mode, res, side_label
+                    )
                     return res
 
                 pre_out = await measure_output(rpc, owner)
@@ -519,7 +527,9 @@ class ExecutionEngineV1Jupiter:
                                 error=str(last_exc),
                                 execution_time_ms=ms,
                             )
-                            await self._persist(db, persist_token_mint, persist_amount_in, mode, res)
+                            await self._persist(
+                                db, persist_token_mint, persist_amount_in, mode, res, side_label
+                            )
                             return res
                         await asyncio.sleep(0.4 * (attempt + 1))
 
@@ -572,7 +582,9 @@ class ExecutionEngineV1Jupiter:
                     f"real_delta={real_delta} slip_real={slip_real:.4f} "
                     f"impact={price_impact:.4f} ms={ms}"
                 )
-                await self._persist(db, persist_token_mint, persist_amount_in, mode, res)
+                await self._persist(
+                    db, persist_token_mint, persist_amount_in, mode, res, side_label
+                )
                 return res
             finally:
                 await rpc.close()
@@ -584,11 +596,14 @@ class ExecutionEngineV1Jupiter:
         lamports: int,
         mode: str,
         res: ExecutionResult,
+        execution_side: Optional[str] = None,
     ) -> None:
         if db is None:
             return
         try:
             row = res.to_log_row(token_mint, lamports, mode)
+            if execution_side:
+                row["execution_side"] = execution_side.upper()
             await db.insert_execution_log(row)
         except Exception as e:
             logger.error(f"No se pudo guardar execution_log: {e}")

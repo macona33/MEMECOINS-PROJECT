@@ -352,6 +352,42 @@ class MetricsTracker:
         if not curve:
             curve.append({"date": datetime.now().strftime("%Y-%m-%d"), "equity": equity})
         return curve
+
+    async def get_live_wallet_equity_curve_from_execution_logs(
+        self, days: int = 30
+    ) -> List[Dict[str, Any]]:
+        """
+        Curva tipo equity desde swaps **live** confirmados: flujo neto de SOL
+        (compras −SOL, ventas +SOL medido en lamports nativos), reexpresado en USD
+        con sol_price_usd_fallback. No incluye comisiones fuera del swap ni saldo
+        inicial de wallet; sirve para el gráfico diario cuando el bot opera on-chain.
+        """
+        rows = await self.db.get_live_wallet_execution_events(days)
+        sol_px = float(SETTINGS.get("sol_price_usd_fallback", 140.0))
+        cum_sol = 0.0
+        curve: List[Dict[str, Any]] = []
+        if not rows:
+            curve.append({"date": datetime.now().strftime("%Y-%m-%d"), "equity": 0.0})
+            return curve
+        for r in rows:
+            side = (r.get("execution_side") or "").upper()
+            ain = int(r.get("amount_in_lamports") or 0)
+            rout = int(r.get("real_out_raw") or 0)
+            if side == "BUY":
+                cum_sol -= ain / 1e9
+            elif side == "SELL":
+                cum_sol += rout / 1e9
+            else:
+                # Filas antiguas sin execution_side: compra suele ser pocos lamports SOL;
+                # venta usa amount_in en raw del token (órdenes de magnitud mayores).
+                if ain <= 10_000_000_000:
+                    cum_sol -= ain / 1e9
+                else:
+                    cum_sol += rout / 1e9
+            ca = r.get("created_at")
+            date_str = str(ca)[:10] if ca else datetime.now().strftime("%Y-%m-%d")
+            curve.append({"date": date_str, "equity": cum_sol * sol_px})
+        return curve
     
     async def export_metrics(self, days: int = 30) -> Dict[str, Any]:
         """
