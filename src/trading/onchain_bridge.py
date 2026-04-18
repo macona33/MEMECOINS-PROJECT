@@ -7,16 +7,22 @@ No modifica umbrales ni tamaños: usa position_size_usd del simulador y lo convi
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
+from dataclasses import dataclass
 from typing import Optional
 
 from loguru import logger
+from solana.rpc.async_api import AsyncClient
 
 from config.settings import SETTINGS
 from src.data_sources.dexscreener import DexScreenerClient
 from src.execution.config import get_execution_config
 from src.execution import ExecutionEngineV1Jupiter
 from src.execution.constants import WSOL_MINT
+from src.execution.tx_fee import get_transaction_fee_lamports
+from src.execution.wallet import load_keypair_from_env
 
 
 def _env_float(name: str, default: float) -> float:
@@ -27,6 +33,24 @@ def _env_float(name: str, default: float) -> float:
         return float(str(raw).strip())
     except ValueError:
         return default
+
+
+@dataclass
+class OnchainBuyResult:
+    ok: bool
+    tx_signature: Optional[str] = None
+    error: Optional[str] = None
+    sol_amount: float = 0.0
+    fee_lamports: Optional[int] = None
+
+
+@dataclass
+class OnchainSellResult:
+    ok: bool
+    tx_signature: Optional[str] = None
+    error: Optional[str] = None
+    fee_lamports: Optional[int] = None
+    attempts: int = 0
 
 
 class BotOnchainBridge:
@@ -49,6 +73,18 @@ class BotOnchainBridge:
     def min_sol_per_trade(self) -> float:
         return _env_float("MIN_ONCHAIN_SOL_PER_TRADE", float(SETTINGS.get("min_onchain_sol_per_trade", 0.001)))
 
+    def min_reserve_usd(self) -> float:
+        return _env_float(
+            "MIN_WALLET_SOL_RESERVE_USD",
+            float(SETTINGS.get("min_wallet_sol_reserve_usd", 10.0)),
+        )
+
+    def sell_retry_timeout_s(self) -> float:
+        return _env_float("SELL_RETRY_TIMEOUT_S", float(SETTINGS.get("sell_retry_timeout_s", 600.0)))
+
+    def sell_retry_interval_s(self) -> float:
+        return _env_float("SELL_RETRY_INTERVAL_S", float(SETTINGS.get("sell_retry_interval_s", 15.0)))
+
     async def fetch_sol_usd(self, dex: DexScreenerClient) -> Optional[float]:
         prices = await dex.get_prices_batch([WSOL_MINT])
         p = float(prices.get(WSOL_MINT, 0) or 0)
@@ -57,6 +93,45 @@ class BotOnchainBridge:
         fb = float(SETTINGS.get("sol_price_usd_fallback", 140.0))
         logger.warning("Precio SOL (DexScreener) no disponible; fallback USD={}", fb)
         return fb
+
+    async def _wallet_balance_sol(self) -> tuple[Optional[float], Optional[str]]:
+        cfg = get_execution_config()
+        rpc_url = (cfg.get("rpc_url") or "").strip()
+        if not rpc_url:
+            return None, "sin RPC"
+        kp = load_keypair_from_env()
+        if kp is None:
+            return None, "sin PRIVATE_KEY"
+        owner = kp.pubkey()
+        to = float(cfg.get("solana_rpc_timeout_s", 30.0))
+        client = AsyncClient(rpc_url, timeout=to)
+        try:
+            r = await client.get_balance(owner)
+            lam = int(r.value or 0)
+            return lam / 1e9, None
+        finally:
+            await client.close()
+
+    async def wallet_has_reserve_for_buy(self, planned_buy_sol: float, dex: DexScreenerClient) -> tuple[bool, str]:
+        """
+        Exige balance nativo >= compra planificada + reserva (equiv. USD en SOL).
+        Evita quedarse sin gas para la venta posterior.
+        """
+        bal_sol, err = await self._wallet_balance_sol()
+        if bal_sol is None:
+            return False, err or "balance desconocido"
+        sol_usd = await self.fetch_sol_usd(dex)
+        if sol_usd is None or sol_usd <= 0:
+            return False, "precio SOL no disponible para comprobar reserva"
+        reserve_sol = self.min_reserve_usd() / sol_usd
+        need = planned_buy_sol + reserve_sol
+        if bal_sol < need:
+            return (
+                False,
+                f"SOL insuficiente: balance≈{bal_sol:.6f}, necesitas compra≈{planned_buy_sol:.6f} "
+                f"+ reserva≈{reserve_sol:.6f} (~{self.min_reserve_usd():.0f} USD gas)",
+            )
+        return True, ""
 
     async def compute_buy_sol_amount(
         self,
@@ -87,28 +162,79 @@ class BotOnchainBridge:
         position_usd: float,
         dex: DexScreenerClient,
         db,
-    ) -> tuple[bool, Optional[str], Optional[str]]:
-        """
-        Compra on-chain acorde a position_usd (capado).
-        Retorna (ok, tx_signature o None, mensaje_error).
-        """
+    ) -> OnchainBuyResult:
         amount_sol = await self.compute_buy_sol_amount(position_usd, dex)
         if amount_sol is None or amount_sol <= 0:
-            return False, None, "monto SOL inválido o precio SOL no disponible"
-        eng = ExecutionEngineV1Jupiter()
-        if not eng.is_live_ready():
-            return False, None, "motor live no listo (RPC / clave / flags)"
-        res = await eng.execute_trade(token_mint, amount_sol, db=db)
-        if res.success and res.tx_signature:
-            return True, res.tx_signature, None
-        return False, res.tx_signature, res.error or res.status
+            return OnchainBuyResult(False, error="monto SOL inválido o precio SOL no disponible")
+        ok_r, msg_r = await self.wallet_has_reserve_for_buy(amount_sol, dex)
+        if not ok_r:
+            return OnchainBuyResult(False, error=msg_r)
 
-    async def execute_sell_for_close(self, token_mint: str, db) -> tuple[bool, Optional[str], Optional[str]]:
-        """Vende todo el SPL del mint (cierra posición en wallet)."""
         eng = ExecutionEngineV1Jupiter()
         if not eng.is_live_ready():
-            return False, None, "motor live no listo (RPC / clave / flags)"
-        res = await eng.execute_sell_all(token_mint, db=db)
-        if res.success and res.tx_signature:
-            return True, res.tx_signature, None
-        return False, res.tx_signature, res.error or res.status
+            return OnchainBuyResult(False, error="motor live no listo (RPC / clave / flags)")
+        res = await eng.execute_trade(token_mint, amount_sol, db=db)
+        if not (res.success and res.tx_signature):
+            return OnchainBuyResult(
+                False,
+                tx_signature=res.tx_signature,
+                error=res.error or res.status,
+                sol_amount=amount_sol,
+            )
+        cfg = get_execution_config()
+        fee = await get_transaction_fee_lamports(
+            (cfg.get("rpc_url") or "").strip(),
+            res.tx_signature,
+            timeout_s=float(cfg.get("solana_rpc_timeout_s", 30.0)),
+        )
+        return OnchainBuyResult(
+            True,
+            tx_signature=res.tx_signature,
+            sol_amount=amount_sol,
+            fee_lamports=fee,
+        )
+
+    async def execute_sell_for_close(self, token_mint: str, db) -> OnchainSellResult:
+        """Vende todo el SPL del mint; reintenta hasta sell_retry_timeout_s."""
+        eng0 = ExecutionEngineV1Jupiter()
+        if not eng0.is_live_ready():
+            return OnchainSellResult(False, error="motor live no listo (RPC / clave / flags)", attempts=0)
+
+        deadline = time.monotonic() + self.sell_retry_timeout_s()
+        interval = self.sell_retry_interval_s()
+        last_err: Optional[str] = None
+        attempts = 0
+        cfg = get_execution_config()
+        rpc_url = (cfg.get("rpc_url") or "").strip()
+        rpc_to = float(cfg.get("solana_rpc_timeout_s", 30.0))
+
+        while time.monotonic() < deadline:
+            attempts += 1
+            eng = ExecutionEngineV1Jupiter()
+            res = await eng.execute_sell_all(token_mint, db=db)
+            if res.success and res.tx_signature:
+                fee = await get_transaction_fee_lamports(
+                    rpc_url,
+                    res.tx_signature,
+                    timeout_s=rpc_to,
+                )
+                return OnchainSellResult(
+                    True,
+                    tx_signature=res.tx_signature,
+                    fee_lamports=fee,
+                    attempts=attempts,
+                )
+            last_err = res.error or res.status
+            logger.warning(
+                "Venta on-chain intento {} falló: {}; reintento en {:.0f}s",
+                attempts,
+                last_err,
+                interval,
+            )
+            await asyncio.sleep(interval)
+
+        return OnchainSellResult(
+            False,
+            error=last_err or "timeout reintentos venta",
+            attempts=attempts,
+        )

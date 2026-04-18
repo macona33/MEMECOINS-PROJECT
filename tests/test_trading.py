@@ -96,7 +96,7 @@ class TestLabelGenerator:
     def setup_method(self):
         self.generator = LabelGenerator(
             pump_threshold=0.20,
-            rug_threshold=0.30,
+            default_stop_loss=0.30,
         )
     
     def test_pump_label_on_high_mfe(self):

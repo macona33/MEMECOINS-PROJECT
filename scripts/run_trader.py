@@ -354,8 +354,13 @@ class TradingApp:
     async def run(self) -> None:
         """Ejecuta todas las tareas en paralelo."""
         self._running = True
-        
-        logger.info("Starting paper trading system...")
+
+        if self.onchain_bridge.is_active():
+            logger.info(
+                "Iniciando motor v2.0 (contabilidad simulada + swaps reales Jupiter al abrir/cerrar)."
+            )
+        else:
+            logger.info("Iniciando motor v2.0 (solo simulación en DB, sin swaps en cadena).")
         
         tasks = [
             asyncio.create_task(self.run_scanner_task(), name="scanner"),

@@ -115,10 +115,17 @@ SETTINGS = {
 
     # ============== FASE 3 — ExecutionEngine_v1_Jupiter + bot on-chain ==============
     "bot_onchain_execution": False,
-    "max_onchain_sol_per_trade": 5,
+    "max_onchain_sol_per_trade": 0.06,
     "min_onchain_sol_per_trade": 0.001,
     "sol_price_usd_fallback": 140.0,
     "sync_execution_slippage_with_paper": True,
+    # Una sola ronda de trading por mint tras un cierre (evita re-entradas en tokens rotos).
+    "block_reentry_same_token_after_close": True,
+    # Reserva mínima de valor en SOL (equiv. USD) antes de permitir compra on-chain.
+    "min_wallet_sol_reserve_usd": 10.0,
+    # Reintentos de venta al cerrar (si falla por gas u otro error transitorio).
+    "sell_retry_timeout_s": 600.0,
+    "sell_retry_interval_s": 15.0,
     "trading_mode": "paper",
     "live_trading_enabled": False,
     # quote-api.jup.ag ya no tiene DNS; API pública en lite-api (v1 swap).

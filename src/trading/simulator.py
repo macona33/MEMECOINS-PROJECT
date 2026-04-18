@@ -4,6 +4,7 @@ Simula entrada y salida de posiciones sin capital real.
 """
 
 import asyncio
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Callable, TYPE_CHECKING
 from dataclasses import dataclass, field
@@ -56,6 +57,9 @@ class SimulatedTrade:
     trade_id: Optional[int] = None  # ID en tabla trades (para trade_features)
     onchain_entry_sig: Optional[str] = None
     onchain_exit_sig: Optional[str] = None
+    onchain_sol_spent: Optional[float] = None
+    onchain_entry_fee_lamports: Optional[int] = None
+    onchain_exit_fee_lamports: Optional[int] = None
 
     @property
     def pnl_pct(self) -> float:
@@ -208,7 +212,21 @@ class TradeSimulator:
         if token_address in self._active_trades:
             logger.warning(f"Trade already open for {token_address}")
             return None
-        
+
+        block_re = bool(SETTINGS.get("block_reentry_same_token_after_close", True))
+        env_be = os.getenv("BLOCK_REENTRY_SAME_TOKEN_AFTER_CLOSE")
+        if env_be is not None:
+            block_re = env_be.strip().lower() in ("1", "true", "yes", "on")
+        if block_re:
+            closed_n = await self.db.count_closed_trades_for_token(token_address)
+            if closed_n > 0:
+                logger.warning(
+                    "Re-entrada bloqueada: ya hay {} trade(s) cerrado(s) para mint {}…",
+                    closed_n,
+                    token_address[:12],
+                )
+                return None
+
         position = self.kelly_calculator.calculate_position(
             evs_result, 
             features,
@@ -248,19 +266,21 @@ class TradeSimulator:
         )
 
         if self._onchain and self._onchain.is_active():
-            ok, sig, err = await self._onchain.execute_buy_for_open(
+            buy_res = await self._onchain.execute_buy_for_open(
                 token_address,
                 position.position_usd,
                 self.dex_client,
                 self.db,
             )
-            if not ok:
+            if not buy_res.ok:
                 logger.error(
                     "On-chain BUY falló; trade no abierto (paper sin posición): {}",
-                    err,
+                    buy_res.error,
                 )
                 return None
-            trade.onchain_entry_sig = sig
+            trade.onchain_entry_sig = buy_res.tx_signature
+            trade.onchain_sol_spent = buy_res.sol_amount
+            trade.onchain_entry_fee_lamports = buy_res.fee_lamports
 
         self._active_trades[token_address] = trade
         self._allocated += position.position_usd
@@ -360,14 +380,16 @@ class TradeSimulator:
             return None
 
         if self._onchain and self._onchain.is_active():
-            ok, sig, err = await self._onchain.execute_sell_for_close(token_address, self.db)
-            if not ok:
+            sell_res = await self._onchain.execute_sell_for_close(token_address, self.db)
+            if not sell_res.ok:
                 logger.error(
-                    "On-chain SELL al cerrar falló (paper/db se cierran igual): {}",
-                    err,
+                    "On-chain SELL al cerrar falló tras {} intentos (paper/db se cierran igual): {}",
+                    sell_res.attempts,
+                    sell_res.error,
                 )
-            elif sig:
-                trade.onchain_exit_sig = sig
+            elif sell_res.tx_signature:
+                trade.onchain_exit_sig = sell_res.tx_signature
+                trade.onchain_exit_fee_lamports = sell_res.fee_lamports
 
         trade.exit_price = exit_price
         trade.exit_time = datetime.now()

@@ -8,7 +8,7 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -18,23 +18,62 @@ load_dotenv()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 
+def _solscan_tx_url(sig: Optional[str]) -> Optional[str]:
+    if not sig or sig == "SIMULATED":
+        return None
+    return f"https://solscan.io/tx/{sig}"
+
+
 def _embed_trade_opened(trade: Any) -> Dict[str, Any]:
     """Construye el embed de Discord para trade abierto."""
+    fields: List[Dict[str, Any]] = [
+        {"name": "Token", "value": trade.symbol, "inline": True},
+        {"name": "Address", "value": f"`{trade.token_address}`", "inline": False},
+        {"name": "Precio entrada (Dex)", "value": f"${trade.entry_price:.8f}", "inline": True},
+        {
+            "name": "Tamaño modelo (Kelly / equity DB)",
+            "value": f"${trade.position_size_usd:.2f} — *no es el saldo de tu wallet*",
+            "inline": True,
+        },
+        {"name": "Kelly", "value": f"{trade.kelly_fraction:.2%}", "inline": True},
+        {"name": "Stop", "value": f"${trade.stop_price:.8f}", "inline": True},
+        {"name": "Take profit", "value": f"${trade.take_profit_price:.8f}", "inline": True},
+        {"name": "EVS entrada", "value": f"{trade.evs_at_entry:.4f}", "inline": True},
+        {"name": "P(rug)", "value": f"{trade.p_rug_at_entry:.2%}", "inline": True},
+        {"name": "P(pump)", "value": f"{trade.p_pump_at_entry:.2%}", "inline": True},
+    ]
+    sig = getattr(trade, "onchain_entry_sig", None)
+    if sig and sig != "SIMULATED":
+        sol_spent = getattr(trade, "onchain_sol_spent", None)
+        fee = getattr(trade, "onchain_entry_fee_lamports", None)
+        parts = []
+        if sol_spent is not None:
+            parts.append(f"**SOL gastados en swap:** `{sol_spent:.6f}`")
+        if fee is not None:
+            parts.append(f"**Fee tx (entrada):** `{fee}` lamports (~{fee / 1e9:.6f} SOL)")
+        url = _solscan_tx_url(sig)
+        if url:
+            parts.append(f"**Explorer:** {url}")
+        fields.append(
+            {
+                "name": "Wallet live (Solana)",
+                "value": "\n".join(parts) if parts else f"`{sig}`",
+                "inline": False,
+            }
+        )
+    else:
+        fields.append(
+            {
+                "name": "Wallet live",
+                "value": "Sin compra on-chain en este evento (paper / flags off).",
+                "inline": False,
+            }
+        )
     return {
         "title": "Trade abierto",
-        "color": 0x00FF00,  # Verde
-        "fields": [
-            {"name": "Token", "value": trade.symbol, "inline": True},
-            {"name": "Address", "value": f"`{trade.token_address}`", "inline": False},
-            {"name": "Precio entrada", "value": f"${trade.entry_price:.8f}", "inline": True},
-            {"name": "Tamaño", "value": f"${trade.position_size_usd:.2f}", "inline": True},
-            {"name": "Kelly", "value": f"{trade.kelly_fraction:.2%}", "inline": True},
-            {"name": "Stop", "value": f"${trade.stop_price:.8f}", "inline": True},
-            {"name": "Take profit", "value": f"${trade.take_profit_price:.8f}", "inline": True},
-            {"name": "EVS entrada", "value": f"{trade.evs_at_entry:.4f}", "inline": True},
-            {"name": "P(rug)", "value": f"{trade.p_rug_at_entry:.2%}", "inline": True},
-            {"name": "P(pump)", "value": f"{trade.p_pump_at_entry:.2%}", "inline": True},
-        ],
+        "description": "Señales y tamaño **modelo**; bloque *Wallet live* = ejecución real si aplica.",
+        "color": 0x00FF00,
+        "fields": fields,
         "timestamp": trade.entry_time.isoformat(),
     }
 
@@ -43,23 +82,61 @@ def _embed_trade_closed(trade: Any) -> Dict[str, Any]:
     """Construye el embed de Discord para trade cerrado."""
     is_win = trade.pnl_usd > 0
     color = 0x00FF00 if is_win else 0xFF0000  # Verde / Rojo
+    fields: List[Dict[str, Any]] = [
+        {"name": "Token", "value": trade.symbol, "inline": True},
+        {"name": "Address", "value": f"`{trade.token_address}`", "inline": False},
+        {"name": "Motivo", "value": trade.exit_reason or "—", "inline": True},
+        {"name": "PnL % (modelo Dex)", "value": f"{trade.pnl_pct:.2%}", "inline": True},
+        {
+            "name": "PnL USD (modelo / equity DB)",
+            "value": f"${trade.pnl_usd:.2f} — *no es ganancia en tu wallet*",
+            "inline": True,
+        },
+        {"name": "Precio entrada", "value": f"${trade.entry_price:.8f}", "inline": True},
+        {"name": "Precio salida", "value": f"${trade.exit_price:.8f}" if trade.exit_price else "—", "inline": True},
+        {
+            "name": "Tamaño modelo",
+            "value": f"${trade.position_size_usd:.2f}",
+            "inline": True,
+        },
+        {"name": "Duración", "value": f"{trade.duration_minutes:.1f} min", "inline": True},
+        {"name": "MFE", "value": f"{trade.current_mfe:.2%}", "inline": True},
+        {"name": "MAE", "value": f"{trade.current_mae:.2%}", "inline": True},
+        {"name": "EVS entrada", "value": f"{trade.evs_at_entry:.4f}", "inline": True},
+    ]
+    xs = getattr(trade, "onchain_exit_sig", None)
+    if xs and xs != "SIMULATED":
+        fee_out = getattr(trade, "onchain_exit_fee_lamports", None)
+        parts = []
+        if fee_out is not None:
+            parts.append(f"**Fee tx (salida):** `{fee_out}` lamports (~{fee_out / 1e9:.6f} SOL)")
+        url = _solscan_tx_url(xs)
+        if url:
+            parts.append(f"**Explorer salida:** {url}")
+        xe = getattr(trade, "onchain_entry_sig", None)
+        fee_in = getattr(trade, "onchain_entry_fee_lamports", None)
+        if xe and fee_in is not None:
+            parts.insert(0, f"**Fee tx (entrada):** `{fee_in}` lamports (~{fee_in / 1e9:.6f} SOL)")
+        fields.append(
+            {
+                "name": "Wallet live (Solana)",
+                "value": "\n".join(parts) if parts else f"`{xs}`",
+                "inline": False,
+            }
+        )
+    else:
+        fields.append(
+            {
+                "name": "Wallet live",
+                "value": "Sin venta on-chain registrada en este cierre (paper o venta fallida).",
+                "inline": False,
+            }
+        )
     return {
         "title": "Trade cerrado",
+        "description": "PnL y precios según **modelo** (Dex); fees = txs reales si constan.",
         "color": color,
-        "fields": [
-            {"name": "Token", "value": trade.symbol, "inline": True},
-            {"name": "Address", "value": f"`{trade.token_address}`", "inline": False},
-            {"name": "Motivo", "value": trade.exit_reason or "—", "inline": True},
-            {"name": "PnL %", "value": f"{trade.pnl_pct:.2%}", "inline": True},
-            {"name": "PnL USD", "value": f"${trade.pnl_usd:.2f}", "inline": True},
-            {"name": "Precio entrada", "value": f"${trade.entry_price:.8f}", "inline": True},
-            {"name": "Precio salida", "value": f"${trade.exit_price:.8f}" if trade.exit_price else "—", "inline": True},
-            {"name": "Tamaño", "value": f"${trade.position_size_usd:.2f}", "inline": True},
-            {"name": "Duración", "value": f"{trade.duration_minutes:.1f} min", "inline": True},
-            {"name": "MFE", "value": f"{trade.current_mfe:.2%}", "inline": True},
-            {"name": "MAE", "value": f"{trade.current_mae:.2%}", "inline": True},
-            {"name": "EVS entrada", "value": f"{trade.evs_at_entry:.4f}", "inline": True},
-        ],
+        "fields": fields,
         "timestamp": (trade.exit_time.isoformat() if trade.exit_time else None),
     }
 

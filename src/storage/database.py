@@ -804,6 +804,19 @@ class DatabaseManager:
         row = await cursor.fetchone()
         return row[0] if row else None
 
+    async def count_closed_trades_for_token(self, token_address: str) -> int:
+        """Cuántos trades ya cerrados existen para este mint (re-entrada controlada)."""
+        cursor = await self._connection.execute(
+            """
+            SELECT COUNT(*) FROM trades
+            WHERE token_address = ?
+              AND exit_time IS NOT NULL
+            """,
+            (token_address,),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
     # ============== FASE 3: EXECUTION LOGS (Jupiter) ==============
 
     async def insert_execution_log(self, row: Dict[str, Any]) -> int:
