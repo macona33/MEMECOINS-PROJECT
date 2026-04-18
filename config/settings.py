@@ -115,7 +115,7 @@ SETTINGS = {
 
     # ============== FASE 3 — ExecutionEngine_v1_Jupiter + bot on-chain ==============
     "bot_onchain_execution": False,
-    "max_onchain_sol_per_trade": 0.06,
+    "max_onchain_sol_per_trade": 0.7,
     "min_onchain_sol_per_trade": 0.001,
     "sol_price_usd_fallback": 140.0,
     "sync_execution_slippage_with_paper": True,
@@ -142,3 +142,5 @@ SETTINGS = {
 }
 
 DATABASE_PATH = DATA_DIR / "tokens.db"
+
+
