@@ -79,6 +79,21 @@ class BotOnchainBridge:
             float(SETTINGS.get("min_wallet_sol_reserve_usd", 10.0)),
         )
 
+    async def wallet_available_usd_for_new_buy(self, dex: DexScreenerClient) -> tuple[Optional[float], str]:
+        """
+        Capital disponible real (USD aprox.) para una nueva compra on-chain, respetando la
+        reserva mínima de gas configurada.
+        """
+        bal_sol, err = await self._wallet_balance_sol()
+        if bal_sol is None:
+            return None, err or "balance desconocido"
+        sol_usd = await self.fetch_sol_usd(dex)
+        if sol_usd is None or sol_usd <= 0:
+            return None, "precio SOL no disponible"
+        reserve_sol = self.min_reserve_usd() / sol_usd
+        free_sol = max(0.0, float(bal_sol) - float(reserve_sol))
+        return free_sol * sol_usd, ""
+
     def sell_retry_timeout_s(self) -> float:
         return _env_float("SELL_RETRY_TIMEOUT_S", float(SETTINGS.get("sell_retry_timeout_s", 600.0)))
 

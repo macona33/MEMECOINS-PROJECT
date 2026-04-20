@@ -227,11 +227,30 @@ class TradeSimulator:
                 )
                 return None
 
-        position = self.kelly_calculator.calculate_position(
-            evs_result, 
-            features,
-            self.available_capital
-        )
+        sizing_capital = self.available_capital
+        live_sizing = False
+        if self._onchain and self._onchain.is_active():
+            live_sizing = True
+            cap_usd, cap_err = await self._onchain.wallet_available_usd_for_new_buy(self.dex_client)
+            if cap_usd is None:
+                logger.warning("Sizing live: no se pudo leer capital wallet: {}", cap_err)
+            else:
+                sizing_capital = float(cap_usd)
+
+        # En live, permite tamaños mínimos más pequeños (configurable) porque el cap en SOL ya protege.
+        old_min = float(getattr(self.kelly_calculator, "min_position_usd", 50.0))
+        if live_sizing:
+            self.kelly_calculator.min_position_usd = float(SETTINGS.get("min_position_usd_live", 10.0))
+        else:
+            self.kelly_calculator.min_position_usd = float(SETTINGS.get("min_position_usd_paper", old_min))
+        try:
+            position = self.kelly_calculator.calculate_position(
+                evs_result,
+                features,
+                sizing_capital,
+            )
+        finally:
+            self.kelly_calculator.min_position_usd = old_min
         
         if not position.is_valid:
             logger.debug(f"Position not valid: {position.rationale}")

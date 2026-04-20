@@ -33,6 +33,10 @@ SETTINGS = {
     "take_profit_target": 0.30,
     "max_hold_hours": 24,
     "max_concurrent_trades": 10,
+    # Mínimo tamaño nocional (USD) para abrir trade. En live suele ser menor para permitir
+    # compras pequeñas; el sizing on-chain además aplica techo en SOL por trade.
+    "min_position_usd_paper": 50.0,
+    "min_position_usd_live": 10.0,
     
     # ============== v2.0: CAPS DE KELLY ==============
     "min_sigma_cap": 0.05,            # Si sigma < esto, aplicar cap conservador
