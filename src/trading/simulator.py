@@ -239,8 +239,10 @@ class TradeSimulator:
 
         # En live, permite tamaños mínimos más pequeños (configurable) porque el cap en SOL ya protege.
         old_min = float(getattr(self.kelly_calculator, "min_position_usd", 50.0))
+        old_max_pct = float(getattr(self.kelly_calculator, "max_position_pct", SETTINGS.get("max_position_pct", 0.03)))
         if live_sizing:
             self.kelly_calculator.min_position_usd = float(SETTINGS.get("min_position_usd_live", 10.0))
+            self.kelly_calculator.max_position_pct = float(SETTINGS.get("max_position_pct_live", old_max_pct))
         else:
             self.kelly_calculator.min_position_usd = float(SETTINGS.get("min_position_usd_paper", old_min))
         try:
@@ -251,6 +253,7 @@ class TradeSimulator:
             )
         finally:
             self.kelly_calculator.min_position_usd = old_min
+            self.kelly_calculator.max_position_pct = old_max_pct
         
         if not position.is_valid:
             logger.debug(f"Position not valid: {position.rationale}")
