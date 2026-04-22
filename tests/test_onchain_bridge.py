@@ -61,3 +61,13 @@ def test_merged_slippage_bps_uses_paper_minimum():
     with patch.object(ec, "SETTINGS", {"execution_slippage_bps": 400, "slippage_pct": 0.02, "sync_execution_slippage_with_paper": True}):
         with patch.dict("os.environ", {"EXECUTION_SLIPPAGE_BPS": ""}, clear=False):
             assert ec._merged_execution_slippage_bps() == 400
+
+
+def test_parse_mint_freeze_authority_flag():
+    # Minimal Mint layout needs >= 82 bytes; freeze_authority_option lives at offset 46..50.
+    b = BotOnchainBridge()
+    buf = bytearray(82)
+    assert b._parse_mint_has_freeze_authority(bytes(buf)) is False
+    buf[46:50] = (1).to_bytes(4, "little")
+    assert b._parse_mint_has_freeze_authority(bytes(buf)) is True
+    assert b._parse_mint_has_freeze_authority(b"") is None

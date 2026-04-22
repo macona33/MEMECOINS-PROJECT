@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from loguru import logger
+from solders.pubkey import Pubkey
 from solana.rpc.async_api import AsyncClient
 
 from config.settings import SETTINGS
@@ -55,6 +56,18 @@ class OnchainSellResult:
 
 class BotOnchainBridge:
     """Ejecuta compra/venta en cadena alineada con el simulador."""
+
+    @staticmethod
+    def _parse_mint_has_freeze_authority(data: bytes) -> Optional[bool]:
+        """
+        Parse minimal Mint layout (SPL Token / Token-2022) to detect freeze authority.
+        Retorna None si el buffer es demasiado corto.
+        """
+        if not data or len(data) < 82:
+            return None
+        # offset 46: freeze_authority_option u32 LE (Mint layout base)
+        opt = int.from_bytes(data[46:50], "little", signed=False)
+        return opt != 0
 
     def is_active(self) -> bool:
         cfg = get_execution_config()
@@ -124,6 +137,38 @@ class BotOnchainBridge:
             r = await client.get_balance(owner)
             lam = int(r.value or 0)
             return lam / 1e9, None
+        finally:
+            await client.close()
+
+    async def mint_has_freeze_authority(self, token_mint: str) -> tuple[Optional[bool], Optional[str], str]:
+        """
+        Lee el mint account por RPC y devuelve:
+        (has_freeze_authority, token_program_owner, error_str)
+        """
+        cfg = get_execution_config()
+        rpc_url = (cfg.get("rpc_url") or "").strip()
+        if not rpc_url:
+            return None, None, "sin RPC"
+        client = AsyncClient(rpc_url, timeout=float(cfg.get("solana_rpc_timeout_s", 30.0)))
+        try:
+            pk = Pubkey.from_string(token_mint)
+            r = await client.get_account_info(pk, encoding="base64")
+            v = getattr(r, "value", None)
+            if v is None:
+                return None, None, "mint no encontrado"
+            owner = str(getattr(v, "owner", "") or "")
+            data = getattr(v, "data", None)
+            if not data or not isinstance(data, (list, tuple)) or not data[0]:
+                return None, owner, "mint data vacío"
+            import base64
+
+            raw = base64.b64decode(data[0])
+            has = self._parse_mint_has_freeze_authority(raw)
+            if has is None:
+                return None, owner, "mint data demasiado corto"
+            return bool(has), owner, ""
+        except Exception as e:
+            return None, None, str(e)
         finally:
             await client.close()
 

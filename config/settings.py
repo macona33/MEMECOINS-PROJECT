@@ -145,6 +145,10 @@ SETTINGS = {
     "execution_rpc_max_retries": 2,
     "execution_confirm_timeout_s": 20.0,
     "execution_max_consecutive_failures": 2,
+
+    # ============== SAFETY (LIVE) ==============
+    # Evita tokens con freeze authority (pueden congelar cuentas y bloquear ventas).
+    "reject_tokens_with_freeze_authority": True,
 }
 
 DATABASE_PATH = DATA_DIR / "tokens.db"

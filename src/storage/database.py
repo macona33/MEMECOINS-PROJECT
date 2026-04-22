@@ -258,6 +258,26 @@ class DatabaseManager:
         """)
         await self._connection.commit()
         await self._ensure_execution_logs_execution_side_column()
+        await self._ensure_tokens_safety_columns()
+
+    async def _ensure_tokens_safety_columns(self) -> None:
+        """Migración ligera: columnas de seguridad del mint (freeze authority, programa)."""
+        if not self._connection:
+            return
+        cursor = await self._connection.execute("PRAGMA table_info(tokens)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        changed = False
+        if "token_program" not in cols:
+            await self._connection.execute("ALTER TABLE tokens ADD COLUMN token_program TEXT")
+            changed = True
+        if "has_freeze_authority" not in cols:
+            await self._connection.execute(
+                "ALTER TABLE tokens ADD COLUMN has_freeze_authority INTEGER"
+            )
+            changed = True
+        if changed:
+            await self._connection.commit()
+            logger.info("Migración DB: tokens.token_program + tokens.has_freeze_authority añadidas")
     
     async def _ensure_execution_logs_execution_side_column(self) -> None:
         """Migración ligera: lado BUY/SELL para curvas y reportes live."""
@@ -317,6 +337,43 @@ class DatabaseManager:
             "SELECT 1 FROM tokens WHERE address = ?", (address,)
         )
         return await cursor.fetchone() is not None
+
+    async def get_token_safety(self, address: str) -> Optional[Dict[str, Any]]:
+        """
+        Devuelve info cacheada del mint si existe:
+        - token_program (owner del mint account)
+        - has_freeze_authority (0/1)
+        """
+        cursor = await self._connection.execute(
+            "SELECT token_program, has_freeze_authority FROM tokens WHERE address = ?",
+            (address,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("has_freeze_authority") is None and d.get("token_program") is None:
+            return None
+        return d
+
+    async def set_token_safety(
+        self, address: str, *, token_program: Optional[str], has_freeze_authority: Optional[bool]
+    ) -> None:
+        """Actualiza columnas de seguridad del mint en tokens."""
+        await self._connection.execute(
+            """
+            UPDATE tokens
+            SET token_program = ?,
+                has_freeze_authority = ?
+            WHERE address = ?
+            """,
+            (
+                token_program,
+                (1 if has_freeze_authority else 0) if has_freeze_authority is not None else None,
+                address,
+            ),
+        )
+        await self._connection.commit()
     
     # ============== FEATURES OPERATIONS ==============
     

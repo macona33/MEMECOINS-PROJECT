@@ -288,6 +288,37 @@ class TradeSimulator:
         )
 
         if self._onchain and self._onchain.is_active():
+            if bool(SETTINGS.get("reject_tokens_with_freeze_authority", True)):
+                cached = await self.db.get_token_safety(token_address)
+                has_freeze = None
+                if cached and cached.get("has_freeze_authority") is not None:
+                    has_freeze = bool(int(cached.get("has_freeze_authority") or 0))
+                if has_freeze is None:
+                    has, owner_prog, err = await self._onchain.mint_has_freeze_authority(token_address)
+                    if err:
+                        logger.warning(
+                            "Safety(mint): no se pudo comprobar freeze_authority para {}…: {}",
+                            token_address[:12],
+                            err,
+                        )
+                    else:
+                        has_freeze = bool(has)
+                    # Cache en DB (solo si existe fila en tokens).
+                    try:
+                        await self.db.set_token_safety(
+                            token_address,
+                            token_program=owner_prog,
+                            has_freeze_authority=has_freeze,
+                        )
+                    except Exception as e:
+                        logger.debug("No se pudo cachear token_safety: {}", e)
+                if has_freeze:
+                    logger.warning(
+                        "Token {}… rechazado: freeze_authority presente (riesgo de cuenta congelada / no vender).",
+                        token_address[:12],
+                    )
+                    return None
+
             buy_res = await self._onchain.execute_buy_for_open(
                 token_address,
                 position.position_usd,
