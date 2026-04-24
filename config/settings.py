@@ -36,7 +36,7 @@ SETTINGS = {
     # Mínimo tamaño nocional (USD) para abrir trade. En live suele ser menor para permitir
     # compras pequeñas; el sizing on-chain además aplica techo en SOL por trade.
     "min_position_usd_paper": 50.0,
-    "min_position_usd_live": 3.0,
+    "min_position_usd_live": 1.0,
     # Solo en live: permite usar un % mayor para poder testear con carteras pequeñas.
     "max_position_pct_live": 0.12,
     
