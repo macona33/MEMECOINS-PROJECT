@@ -4,6 +4,7 @@ Sistema paramétrico adaptativo con edge estable.
 """
 
 import asyncio
+import os
 import signal
 import sys
 from datetime import datetime, timedelta
@@ -24,16 +25,19 @@ from src.market import RegimeDetector
 from config.settings import SETTINGS
 
 logger.remove()
+_lvl = (os.getenv("LOG_LEVEL") or "INFO").strip().upper()
+if _lvl not in ("TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"):
+    _lvl = "INFO"
 logger.add(
     sys.stderr,
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
-    level="INFO"
+    level=_lvl
 )
 logger.add(
     "logs/trader_{time:YYYY-MM-DD}.log",
     rotation="1 day",
     retention="7 days",
-    level="DEBUG"
+    level=_lvl
 )
 
 
