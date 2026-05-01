@@ -149,6 +149,16 @@ SETTINGS = {
     # ============== SAFETY (LIVE) ==============
     # Evita tokens con freeze authority (pueden congelar cuentas y bloquear ventas).
     "reject_tokens_with_freeze_authority": True,
+
+    # ============== ENRICHMENT (Solscan) ==============
+    # Enriquecer selectivamente candidatos con señales on-chain (renounced/holders/authorities)
+    # para mejorar EVS sin disparar requests en cada token nuevo.
+    "solscan_enrich_candidates": True,
+    # Enriquecer si EVS_adj preliminar está dentro de este margen bajo el umbral de régimen.
+    # Ej: threshold=0.06 y margin=0.20 => enriquece si EVS_adj >= -0.14
+    "solscan_enrich_evs_margin": 0.20,
+    # Máximo de enriquecimientos por “scan window” (aprox. cada scan_interval_seconds).
+    "solscan_enrich_max_per_scan": 3,
 }
 
 DATABASE_PATH = DATA_DIR / "tokens.db"

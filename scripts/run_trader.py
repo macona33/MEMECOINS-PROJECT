@@ -92,6 +92,8 @@ class TradingApp:
         
         self._running = False
         self._last_regime_check = datetime.now()
+        self._enrich_window_started = datetime.now()
+        self._enrich_used_in_window = 0
         # Recalibración: solo en local con scripts/recalibrate_standalone.py (DB actualizada)
     
     async def initialize(self) -> None:
@@ -175,13 +177,65 @@ class TradingApp:
         if not filter_result.passed:
             return
         
-        features = await self.feature_extractor.extract_and_save(token)
-        evs_result = self.evs_calculator.calculate(features)
-        await self.evs_calculator.save_scores(self.db, address, features)
-        
         adjustments = self.regime_detector.get_adjustments()
         adjusted_threshold = adjustments.evs_threshold
+
+        # ========== Fase A: pre-score (DexScreener only) ==========
+        token_for_scoring = token
+        features_final = await self.feature_extractor.extract_and_save(token_for_scoring)
+        evs_pre = self.evs_calculator.calculate(features_final)
+        await self.evs_calculator.save_scores(self.db, address, features_final)
+
+        # ========== Fase B: enrich selectivo con Solscan ==========
+        if bool(SETTINGS.get("solscan_enrich_candidates", True)):
+            margin = float(SETTINGS.get("solscan_enrich_evs_margin", 0.20))
+            max_per_scan = int(SETTINGS.get("solscan_enrich_max_per_scan", 3))
+            # Resetea ventana aprox. por ciclo de scanner (usa scan_interval_seconds).
+            scan_s = float(SETTINGS.get("scan_interval_seconds", 120))
+            now = datetime.now()
+            if (now - self._enrich_window_started).total_seconds() >= max(30.0, scan_s):
+                self._enrich_window_started = now
+                self._enrich_used_in_window = 0
+
+            if self._enrich_used_in_window < max_per_scan:
+                if evs_pre.evs_adj >= (adjusted_threshold - margin):
+                    logger.debug(
+                        "Solscan enrich candidato: {} EVS_adj_pre={:.4f} threshold={:.4f} (margin={:.2f})",
+                        symbol,
+                        evs_pre.evs_adj,
+                        adjusted_threshold,
+                        margin,
+                    )
+                    enriched = await self.solscan_client.enrich_token_data(token_for_scoring)
+                    # Guarda campos enriquecidos en DB tokens (ownership_renounced/verified).
+                    try:
+                        await self.db.insert_token(enriched)
+                    except Exception as e:
+                        logger.debug("No se pudo upsert token enriquecido en DB: {}", e)
+
+                    features_post = await self.feature_extractor.extract_and_save(enriched)
+                    evs_post = self.evs_calculator.calculate(features_post)
+                    await self.evs_calculator.save_scores(self.db, address, features_post)
+                    self._enrich_used_in_window += 1
+                    token_for_scoring = enriched
+                    features_final = features_post
+                    evs_pre = evs_post
+                else:
+                    logger.debug(
+                        "Solscan enrich skip: {} EVS_adj_pre={:.4f} < gate={:.4f}",
+                        symbol,
+                        evs_pre.evs_adj,
+                        adjusted_threshold - margin,
+                    )
+            else:
+                logger.debug(
+                    "Solscan enrich cap alcanzado ({} por scan): omitido para {}",
+                    max_per_scan,
+                    symbol,
+                )
         
+        evs_result = evs_pre
+
         if evs_result.evs_adj < adjusted_threshold:
             logger.debug(
                 f"v2.0 Regime filter: {symbol} EVS={evs_result.evs_adj:.4f} "
@@ -204,13 +258,13 @@ class TradingApp:
         
         trade = await self.simulator.open_trade(
             token_address=address,
-            token_info=token,
+            token_info=token_for_scoring,
             evs_result=evs_result,
-            features=features,
+            features=features_final,
         )
         
         if trade:
-            await self._save_trade_features(trade.trade_id, address, features, evs_result)
+            await self._save_trade_features(trade.trade_id, address, features_final, evs_result)
             notify_trade_opened(trade)
 
             logger.info(
