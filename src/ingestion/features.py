@@ -11,6 +11,24 @@ from loguru import logger
 from src.storage import DatabaseManager, TimeseriesManager
 from config.settings import SETTINGS
 
+# Valor en [0,1] para booleanos on-chain aún no conocidos (p. ej. solo Dex).
+# No usar 0.0 aquí: el filtro permite `None` pero el modelo no debe asumir "no renunciado".
+UNKNOWN_BOOL_FEATURE = 0.5
+
+
+def _bool_or_unknown(value: Any) -> float:
+    """True→1.0, False→0.0, None/desconocido→UNKNOWN_BOOL_FEATURE."""
+    if value is None:
+        return UNKNOWN_BOOL_FEATURE
+    return 1.0 if value else 0.0
+
+
+def _authority_or_absent(value: Any) -> float:
+    """Freeze/mint: True→1.0; False/None→0.0 (sin dato no implica autoridad activa)."""
+    if value is None:
+        return 0.0
+    return 1.0 if value else 0.0
+
 
 class FeatureExtractor:
     """Extrae y calcula features para el scoring de tokens."""
@@ -29,10 +47,11 @@ class FeatureExtractor:
         """
         features = {}
         
-        features["has_renounced"] = 1.0 if token.get("ownership_renounced") else 0.0
-        features["has_verified"] = 1.0 if token.get("contract_verified") else 0.0
-        features["has_freeze_auth"] = 1.0 if token.get("has_freeze_authority") else 0.0
-        features["has_mint_auth"] = 1.0 if token.get("has_mint_authority") else 0.0
+        features["has_renounced"] = _bool_or_unknown(token.get("ownership_renounced"))
+        features["has_verified"] = _bool_or_unknown(token.get("contract_verified"))
+        # Dex no trae autoridades: None → 0.0 (no penalizar en hazard hasta constar lo contrario).
+        features["has_freeze_auth"] = _authority_or_absent(token.get("has_freeze_authority"))
+        features["has_mint_auth"] = _authority_or_absent(token.get("has_mint_authority"))
         
         features["holder_concentration"] = token.get("top_10_holders_pct", 0.5) or 0.5
         features["top_holder_pct"] = token.get("top_holder_pct", 0.2) or 0.2
@@ -147,11 +166,12 @@ class FeatureExtractor:
         
         risk_score = 0.0
         
-        if features.get("has_freeze_auth", 0) > 0:
+        if features.get("has_freeze_auth", 0.0) >= 1.0:
             risk_score += 0.2
-        if features.get("has_mint_auth", 0) > 0:
+        if features.get("has_mint_auth", 0.0) >= 1.0:
             risk_score += 0.2
-        if features.get("has_renounced", 0) == 0:
+        # Solo penalizar renuncia si consta explícitamente que no (no tratar 0.5 como no).
+        if features.get("has_renounced", UNKNOWN_BOOL_FEATURE) <= 0.0:
             risk_score += 0.3
         
         holder_conc = features.get("holder_concentration", 0.5)
