@@ -15,6 +15,7 @@ SETTINGS = {
     "require_renounced": True,
     "require_verified": False,
     "max_holder_concentration": 0.50,
+    # Puedes subir a ~25 para evitar rugs de liquidez temprana; contrastar con scripts/backtest_age_filter.py
     "min_token_age_minutes": 5,
     "max_token_age_hours": 24,
     
@@ -31,6 +32,10 @@ SETTINGS = {
     "mature_stage_max_position": 0.05,# v2.0: Máximo después de >= 100 trades
     "base_stop_loss": 0.15,
     "take_profit_target": 0.30,
+    # Trailing: desde activación hasta TP el lock sube de base→near_tp (proporcional al precio).
+    "trailing_mfe_floor_pct": 0.12,
+    "trailing_lock_fraction_base": 0.50,
+    "trailing_lock_fraction_near_tp": 0.85,
     "max_hold_hours": 24,
     "max_concurrent_trades": 10,
     # Mínimo tamaño nocional (USD) para abrir trade. En live suele ser menor para permitir
@@ -63,6 +68,8 @@ SETTINGS = {
     
     # ============== RECALIBRACIÓN v2.0 ==============
     "min_trades_for_recalibration": 30,  # v2.0: Reducido de 50 a 30
+    # Por debajo de este N el script avisa de riesgo de sobreajuste (sigue permitiendo 30..N si min ok).
+    "recalibration_strong_min_samples": 50,
     "recalibration_window_days": 7,
     "recalibration_interval_hours": 24,  # v2.0: Cada 24 horas
     "new_trades_trigger": 30,            # v2.0: O cada N trades nuevos
@@ -149,6 +156,13 @@ SETTINGS = {
     # ============== SAFETY (LIVE) ==============
     # Evita tokens con freeze authority (pueden congelar cuentas y bloquear ventas).
     "reject_tokens_with_freeze_authority": True,
+    # Si RPC/parse no puede verificar freeze: no abrir compra (recomendado live).
+    "freeze_authority_check_fail_closed": True,
+    # Si la caché dice "sin freeze" pero el mint es Token-2022, forzar nueva lectura RPC.
+    "freeze_authority_reverify_token2022": True,
+    # Si hay caché "sin freeze" pero falta token_program, no confiar en caché y re-leer mint.
+    "freeze_authority_reverify_if_program_unknown": True,
+    "spl_token_2022_program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
 
     # ============== ENRICHMENT (Solscan) ==============
     # Enriquecer selectivamente candidatos con señales on-chain (renounced/holders/authorities)

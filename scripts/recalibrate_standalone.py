@@ -55,6 +55,13 @@ async def run_recalibration(force: bool = False, training_days: int = None) -> N
         trade_features = await db.get_training_dataset(days=training_days)
         print(f"  Dataset de entrenamiento: {len(trade_features)} trade_features" + (f" (ultimos {training_days} dias)" if training_days else " (todas)"))
 
+        strong_min = int(SETTINGS.get("recalibration_strong_min_samples", 50) or 50)
+        if len(trade_features) < strong_min:
+            print(
+                f"  AVISO: N={len(trade_features)} < {strong_min} (recalibration_strong_min_samples): "
+                "riesgo de sobreajuste; conviene acumular más trades o ampliar ventana con --days."
+            )
+
         if len(trade_features) < min_new:
             print(f"  No se ejecuta: dataset tiene {len(trade_features)} < {min_new}.")
             return

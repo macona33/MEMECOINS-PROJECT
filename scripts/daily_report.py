@@ -1,6 +1,15 @@
 """
 Script para generar reportes diarios de rendimiento.
 Puede ejecutarse manualmente o programarse con cron/scheduler.
+
+Gráfico Discord:
+- Live: curva desde `execution_logs` (flujo neto SOL×precio ref.; no es saldo total de wallet).
+- Paper: curva desde trades cerrados (equity modelo) o PnL desde línea base si está activa.
+
+Línea base del gráfico (PnL “desde cero” a partir de una fecha):
+  python scripts/daily_report.py --set-chart-baseline-today
+  python scripts/daily_report.py --set-chart-baseline-now
+  python scripts/daily_report.py --clear-chart-baseline
 """
 
 import asyncio
@@ -25,6 +34,36 @@ logger.add(
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
     level="INFO"
 )
+
+
+async def set_report_chart_baseline(mode: str) -> None:
+    """
+    mode: 'today' = hoy 00:00 local, 'now' = instante actual.
+    El gráfico Discord acumulará solo trades/swaps posteriores a esta marca.
+    """
+    from datetime import date, datetime, time
+
+    db = DatabaseManager()
+    await db.connect()
+    try:
+        if mode == "today":
+            iso = datetime.combine(date.today(), time.min).strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await db.set_report_chart_baseline_iso(iso)
+        print(f"Línea base del gráfico PnL fijada en: {iso}")
+    finally:
+        await db.close()
+
+
+async def clear_report_chart_baseline() -> None:
+    db = DatabaseManager()
+    await db.connect()
+    try:
+        await db.set_report_chart_baseline_iso(None)
+        print("Línea base del gráfico PnL eliminada (vuelve al periodo completo).")
+    finally:
+        await db.close()
 
 
 async def reset_paper_risk_equity() -> None:
@@ -56,6 +95,7 @@ async def generate_daily_report(days: int = 7):
     await db.connect()
     
     try:
+        chart_baseline = await db.get_report_chart_baseline_iso()
         onchain = BotOnchainBridge()
         live_reporting = onchain.is_active()
         metrics_tracker = MetricsTracker(db)
@@ -80,12 +120,14 @@ async def generate_daily_report(days: int = 7):
             print("       DAILY REPORT — PAPER (modelo / equity DB)")
         print(f"       Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         print("=" * 60)
+        if chart_baseline:
+            print(f"  [Gráfico] Línea base activa: {chart_baseline} (PnL acumulado solo desde ahí).")
         if live_reporting:
             print(
-                "  [Live] Gráfico Discord = flujo neto aprox. desde execution_logs (SOL→USD ref.)."
+                "  [Live] Gráfico Discord = flujo neto desde execution_logs (SOL×precio ref.; no es saldo total de wallet)."
             )
             print(
-                "  [Modelo] Bloques siguientes = métricas simulador (pnl_usd en trades puede divergir de wallet)."
+                "  [Modelo] Bloques de texto = métricas desde tabla trades (pueden no coincidir 1:1 con on-chain)."
             )
         
         today_metrics = await metrics_tracker.calculate_daily_metrics()
@@ -209,23 +251,40 @@ async def generate_daily_report(days: int = 7):
         report_data["today"] = today_metrics
         report_data["success_criteria"] = success
 
+        baseline_note = (
+            f"📍 **Línea base del gráfico:** `{chart_baseline}`"
+            if chart_baseline
+            else None
+        )
         if live_reporting:
             equity_curve = await metrics_tracker.get_live_wallet_equity_curve_from_execution_logs(
-                days=days
+                days=days,
+                min_created_iso=chart_baseline,
             )
             await send_daily_pnl_chart(
                 equity_curve,
                 initial_capital=0.0,
                 report_mode="live",
+                cumulative_from_zero=bool(chart_baseline),
+                chart_title="PnL acumulado — Live (swaps)",
+                baseline_note=baseline_note,
             )
         else:
-            equity_curve = await metrics_tracker.get_equity_curve_from_trades(days=days)
+            equity_curve = await metrics_tracker.get_equity_curve_from_trades(
+                days=days,
+                min_exit_iso=chart_baseline,
+            )
             if not equity_curve:
                 equity_curve = await metrics_tracker.get_equity_curve(days=days)
             await send_daily_pnl_chart(
                 equity_curve,
-                initial_capital=SETTINGS["initial_capital"],
+                initial_capital=0.0 if chart_baseline else float(SETTINGS["initial_capital"]),
                 report_mode="paper",
+                cumulative_from_zero=bool(chart_baseline),
+                chart_title="Equity / PnL — Paper (trades DB)"
+                if not chart_baseline
+                else "PnL acumulado — Paper (desde línea base)",
+                baseline_note=baseline_note,
             )
 
         report_file = report_dir / f"report_{date.today().isoformat()}.json"
@@ -314,10 +373,31 @@ def main():
         action="store_true",
         help="Resetea risk_state (equity/peak paper) al initial_capital de SETTINGS",
     )
-    
+    parser.add_argument(
+        "--set-chart-baseline-today",
+        action="store_true",
+        help="El gráfico PnL en Discord acumula solo desde hoy 00:00 (hora local)",
+    )
+    parser.add_argument(
+        "--set-chart-baseline-now",
+        action="store_true",
+        help="El gráfico PnL acumula solo desde este instante",
+    )
+    parser.add_argument(
+        "--clear-chart-baseline",
+        action="store_true",
+        help="Quita la línea base del gráfico (vuelve a mostrar todo el periodo)",
+    )
+
     args = parser.parse_args()
-    
-    if args.reset_paper_equity:
+
+    if args.clear_chart_baseline:
+        asyncio.run(clear_report_chart_baseline())
+    elif args.set_chart_baseline_today:
+        asyncio.run(set_report_chart_baseline("today"))
+    elif args.set_chart_baseline_now:
+        asyncio.run(set_report_chart_baseline("now"))
+    elif args.reset_paper_equity:
         asyncio.run(reset_paper_risk_equity())
     elif args.recalibrate:
         asyncio.run(run_recalibration())

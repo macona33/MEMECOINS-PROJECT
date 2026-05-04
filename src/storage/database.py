@@ -259,6 +259,21 @@ class DatabaseManager:
         await self._connection.commit()
         await self._ensure_execution_logs_execution_side_column()
         await self._ensure_tokens_safety_columns()
+        await self._ensure_report_chart_baseline_column()
+
+    async def _ensure_report_chart_baseline_column(self) -> None:
+        """Línea base ISO para el gráfico PnL del daily report (PnL desde esta fecha/hora)."""
+        if not self._connection:
+            return
+        cursor = await self._connection.execute("PRAGMA table_info(calibration_state)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if "report_chart_baseline_iso" in cols:
+            return
+        await self._connection.execute(
+            "ALTER TABLE calibration_state ADD COLUMN report_chart_baseline_iso TEXT"
+        )
+        await self._connection.commit()
+        logger.info("Migración DB: calibration_state.report_chart_baseline_iso añadida")
 
     async def _ensure_tokens_safety_columns(self) -> None:
         """Migración ligera: columnas de seguridad del mint (freeze authority, programa)."""
@@ -375,6 +390,59 @@ class DatabaseManager:
         )
         await self._connection.commit()
     
+    async def audit_token_safety_for_traded_mints(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        Lista mints que aparecen en trades con columnas de seguridad en `tokens`.
+        Útil para auditar caché RPC vs ventas fallidas (freeze).
+        """
+        cursor = await self._connection.execute(
+            """
+            SELECT
+                t.token_address AS address,
+                MAX(tok.symbol) AS symbol,
+                MAX(tok.token_program) AS token_program,
+                MAX(tok.has_freeze_authority) AS has_freeze_authority,
+                COUNT(*) AS trade_count
+            FROM trades t
+            LEFT JOIN tokens tok ON tok.address = t.token_address
+            GROUP BY t.token_address
+            ORDER BY trade_count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_closed_trades_with_entry_age_hours(self) -> List[Dict[str, Any]]:
+        """Trades cerrados con age_hours al entry (trade_features)."""
+        cursor = await self._connection.execute(
+            """
+            SELECT t.id, t.token_address, t.pnl_usd, t.exit_reason, t.label, tf.age_hours
+            FROM trades t
+            INNER JOIN trade_features tf ON tf.trade_id = t.id
+            WHERE t.exit_time IS NOT NULL
+              AND tf.age_hours IS NOT NULL
+            """
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_closed_trade_tp_mfe_rows(self) -> List[Dict[str, Any]]:
+        """Filas para analyze_tp_mfe: take_profit_pct vs actual_mfe al cierre."""
+        cursor = await self._connection.execute(
+            """
+            SELECT tf.take_profit_pct, tf.actual_mfe, t.exit_reason, t.label
+            FROM trade_features tf
+            JOIN trades t ON t.id = tf.trade_id
+            WHERE t.exit_time IS NOT NULL
+              AND tf.take_profit_pct IS NOT NULL
+              AND tf.actual_mfe IS NOT NULL
+            """
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
     # ============== FEATURES OPERATIONS ==============
     
     async def insert_features(self, address: str, features: Dict[str, Any]) -> None:
@@ -581,6 +649,28 @@ class DatabaseManager:
         """, (f"-{days} days",))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def get_closed_trades_for_equity_chart(
+        self, days: int = 30, min_exit_iso: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Trades cerrados con PnL, orden cronológico por cierre (curva acumulada).
+        Opcionalmente solo con exit_time >= min_exit_iso (línea base del gráfico).
+        """
+        clause = (
+            "exit_time IS NOT NULL AND pnl_usd IS NOT NULL "
+            "AND datetime(exit_time) > datetime('now', ?)"
+        )
+        params: List[Any] = [f"-{days} days"]
+        if min_exit_iso:
+            clause += " AND datetime(exit_time) >= datetime(?)"
+            params.append(min_exit_iso.strip())
+        cursor = await self._connection.execute(
+            f"SELECT * FROM trades WHERE {clause} ORDER BY datetime(exit_time) ASC, id ASC",
+            tuple(params),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
     
     # ============== METRICS OPERATIONS ==============
     
@@ -741,6 +831,33 @@ class DatabaseManager:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
     
+    async def get_report_chart_baseline_iso(self) -> Optional[str]:
+        """ISO guardado para que el gráfico PnL acumule solo desde esta marca temporal."""
+        await self._ensure_report_chart_baseline_column()
+        cursor = await self._connection.execute(
+            "SELECT report_chart_baseline_iso FROM calibration_state WHERE id = 1"
+        )
+        row = await cursor.fetchone()
+        if not row or row[0] is None or str(row[0]).strip() == "":
+            return None
+        return str(row[0]).strip()
+
+    async def set_report_chart_baseline_iso(self, iso: Optional[str]) -> None:
+        """Fija o borra (iso=None) la línea base del gráfico en calibration_state."""
+        await self._ensure_report_chart_baseline_column()
+        await self._connection.execute(
+            "INSERT OR IGNORE INTO calibration_state (id) VALUES (1)"
+        )
+        await self._connection.execute(
+            """
+            UPDATE calibration_state
+            SET report_chart_baseline_iso = ?, last_updated = CURRENT_TIMESTAMP
+            WHERE id = 1
+            """,
+            (iso,),
+        )
+        await self._connection.commit()
+
     async def get_last_recalibration_at(self) -> Optional[str]:
         """Fecha/hora de la última recalibración (o None si nunca)."""
         cursor = await self._connection.execute(
@@ -918,20 +1035,30 @@ class DatabaseManager:
         await self._connection.commit()
         return cursor.lastrowid
 
-    async def get_live_wallet_execution_events(self, days: int = 30) -> List[Dict[str, Any]]:
+    async def get_live_wallet_execution_events(
+        self, days: int = 30, min_created_iso: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Swaps live confirmados (SUCCESS), orden cronológico, para PnL aprox. en SOL.
+        Si min_created_iso, solo filas con created_at >= esa marca (reset del gráfico).
         """
-        cursor = await self._connection.execute(
-            """
-            SELECT * FROM execution_logs
-            WHERE created_at > datetime('now', ?)
+        clause = """
+            created_at > datetime('now', ?)
               AND mode = 'live'
               AND status = 'SUCCESS'
               AND IFNULL(tx_signature, '') NOT IN ('', 'SIMULATED')
+        """
+        params: List[Any] = [f"-{days} days"]
+        if min_created_iso:
+            clause += " AND datetime(created_at) >= datetime(?)"
+            params.append(min_created_iso.strip())
+        cursor = await self._connection.execute(
+            f"""
+            SELECT * FROM execution_logs
+            WHERE {clause}
             ORDER BY datetime(created_at) ASC, id ASC
             """,
-            (f"-{days} days",),
+            tuple(params),
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]

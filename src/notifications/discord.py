@@ -181,60 +181,109 @@ def notify_trade_closed(trade: Any) -> None:
     asyncio.create_task(_send_webhook(embed))
 
 
+def _parse_chart_event_time(raw: Optional[str]):
+    """Parsea marca temporal para eje X (naive local)."""
+    if not raw or not str(raw).strip():
+        return None
+    s = str(raw).strip().replace("T", " ")[:19]
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+
+
 def _generate_pnl_chart(
     equity_curve: List[Dict[str, Any]],
     initial_capital: float,
     *,
     y_axis_label: str = "PnL ($)",
+    title: str = "Rendimiento del bot",
+    cumulative_from_zero: bool = False,
 ) -> Path:
-    """Genera gráfico de PnL (estilo Strategy: Trades vs PnL $) y retorna ruta al archivo PNG."""
+    """
+    Curva de PnL: eje Y = PnL acumulado respecto a initial_capital, o valor acumulado si cumulative_from_zero.
+    Eje X = tiempo (event_time) si todas las filas lo traen; si no, índice de evento.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
 
     if not equity_curve:
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.text(0.5, 0.5, "Sin datos de trades aún", ha="center", va="center", fontsize=14)
+        fig, ax = plt.subplots(figsize=(10, 5.2))
+        ax.text(0.5, 0.5, "Sin datos en el periodo", ha="center", va="center", fontsize=13)
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.axis("off")
     else:
-        trades_t = list(range(len(equity_curve)))
-        pnl_usd = [(p.get("equity", initial_capital) - initial_capital) for p in equity_curve]
+        if cumulative_from_zero or abs(initial_capital) < 1e-9:
+            pnl_usd = [float(p.get("equity") or 0) for p in equity_curve]
+        else:
+            pnl_usd = [
+                float(p.get("equity", initial_capital) or 0) - float(initial_capital)
+                for p in equity_curve
+            ]
 
-        fig, ax = plt.subplots(figsize=(10, 5))
-        fig.patch.set_facecolor("#f5f5f5")
-        ax.set_facecolor("#f0f0f0")
-        ax.tick_params(colors="#333")
-        ax.xaxis.label.set_color("#333")
-        ax.yaxis.label.set_color("#333")
-        ax.title.set_color("#2d2d2d")
+        xs_dt = [_parse_chart_event_time(p.get("event_time")) for p in equity_curve]
+        use_time = all(x is not None for x in xs_dt) and len(xs_dt) > 1
 
-        ax.plot(
-            trades_t,
-            pnl_usd,
-            color="#2dd4bf",
-            linewidth=2,
-            marker="o",
-            markersize=5,
-            label="portfolio pnl",
-        )
-        ax.axhline(y=0, color="#555", linestyle="--", linewidth=1)
-        ax.set_ylabel(y_axis_label, fontsize=11)
-        ax.set_xlabel("Trades (T)", fontsize=11)
-        ax.set_title("Strategy", fontsize=13)
-        ax.grid(True, alpha=0.4, color="#999")
-        ax.legend(loc="upper left", framealpha=0.9)
-        ax.set_xlim(left=-0.5)
+        fig, ax = plt.subplots(figsize=(10, 5.2))
+        fig.patch.set_facecolor("#1e1e2e")
+        ax.set_facecolor("#181825")
+        ax.tick_params(colors="#cdd6f4", labelsize=9)
+        ax.xaxis.label.set_color("#cdd6f4")
+        ax.yaxis.label.set_color("#cdd6f4")
+        ax.title.set_color("#89b4fa")
+        ax.spines["bottom"].set_color("#45475a")
+        ax.spines["left"].set_color("#45475a")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        if use_time:
+            x_num = [mdates.date2num(d) for d in xs_dt]
+            ax.plot(
+                x_num,
+                pnl_usd,
+                color="#94e2d5",
+                linewidth=2.2,
+                marker="o",
+                markersize=4,
+                label="PnL acumulado",
+            )
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+            fig.autofmt_xdate(rotation=22)
+            ax.set_xlabel("Tiempo (cierre / ejecución)", fontsize=10, color="#cdd6f4")
+        else:
+            trades_t = list(range(len(equity_curve)))
+            ax.plot(
+                trades_t,
+                pnl_usd,
+                color="#94e2d5",
+                linewidth=2.2,
+                marker="o",
+                markersize=4,
+                label="PnL acumulado",
+            )
+            ax.set_xlabel("Evento nº (orden cronológico)", fontsize=10, color="#cdd6f4")
+
+        ax.axhline(y=0, color="#6c7086", linestyle="--", linewidth=1)
+        ax.set_ylabel(y_axis_label, fontsize=10, color="#cdd6f4")
+        ax.set_title(title, fontsize=13, pad=10)
+        ax.grid(True, alpha=0.25, color="#45475a")
+        ax.legend(loc="upper left", framealpha=0.85, facecolor="#313244", edgecolor="#45475a")
         if pnl_usd:
             y_min = min(min(pnl_usd), 0)
             y_max = max(max(pnl_usd), 0)
-            margin = (y_max - y_min) * 0.05 or 10
+            margin = (y_max - y_min) * 0.08 if (y_max - y_min) > 1e-9 else max(abs(y_max), 1.0) * 0.05
             ax.set_ylim(bottom=y_min - margin, top=y_max + margin)
         fig.tight_layout()
 
     path = Path(tempfile.gettempdir()) / f"pnl_chart_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    fig.savefig(path, dpi=100, bbox_inches="tight", facecolor=fig.get_facecolor())
+    fig.savefig(path, dpi=120, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
     return path
 
@@ -245,6 +294,9 @@ async def send_daily_pnl_chart(
     *,
     report_mode: str = "paper",
     chart_ylabel: Optional[str] = None,
+    chart_title: Optional[str] = None,
+    cumulative_from_zero: bool = False,
+    baseline_note: Optional[str] = None,
 ) -> None:
     """
     Genera gráfico de PnL y lo envía a Discord.
@@ -255,22 +307,44 @@ async def send_daily_pnl_chart(
         return
     try:
         ylabel = chart_ylabel or (
-            "PnL aprox. (USD, SOL×ref.)" if report_mode == "live" else "PnL ($)"
+            "PnL acumulado aprox. (USD, SOL×precio ref.)"
+            if report_mode == "live"
+            else "PnL acumulado (USD, trades cerrados)"
         )
-        path = _generate_pnl_chart(equity_curve, initial_capital, y_axis_label=ylabel)
+        ttl = chart_title or (
+            "Reporte diario — Live (flujo swaps)" if report_mode == "live" else "Reporte diario — Paper (DB)"
+        )
+        path = _generate_pnl_chart(
+            equity_curve,
+            initial_capital,
+            y_axis_label=ylabel,
+            title=ttl,
+            cumulative_from_zero=cumulative_from_zero,
+        )
         import aiohttp
-        last_equity = equity_curve[-1].get("equity", initial_capital) if equity_curve else initial_capital
+        last_y = float(equity_curve[-1].get("equity", 0) or 0) if equity_curve else 0.0
         if report_mode == "live":
-            title = "📊 Reporte Diario – Live (wallet / swaps)"
+            title = "📊 " + ttl
             desc = (
-                f"Flujo neto acumulado aprox. en USD (no es el saldo total de la wallet): "
-                f"**${last_equity:,.2f}** · referencia base en el gráfico: **${initial_capital:,.2f}**"
+                "Flujo **neto aproximado** en USD desde swaps registrados (compras −SOL / ventas +SOL × precio). "
+                "**No** es el saldo total de la cartera ni incluye SOL que ya tenías.\n"
+                f"**Acumulado (serie):** `${last_y:,.2f}`"
             )
         else:
-            title = "📊 Reporte Diario – Paper (modelo / equity DB)"
-            desc = (
-                f"Equity modelo: **${last_equity:,.2f}** (inicial paper: **${initial_capital:,.2f}**)"
-            )
+            title = "📊 " + ttl
+            if cumulative_from_zero:
+                desc = (
+                    "PnL **acumulado en USD** desde la línea base (solo trades cerrados posteriores).\n"
+                    f"**Total desde reset:** `${last_y:,.2f}`"
+                )
+            else:
+                desc = (
+                    "Equity del **modelo** (capital inicial + suma de `pnl_usd` por cierre). "
+                    "Coincide con Kelly/risk_state si el simulador y la DB están alineados.\n"
+                    f"**Equity final (serie):** `${last_y:,.2f}` · inicial ref.: `${initial_capital:,.2f}`"
+                )
+        if baseline_note:
+            desc = desc + "\n" + baseline_note
         embed = {
             "title": title,
             "description": desc,

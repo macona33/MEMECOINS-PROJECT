@@ -54,6 +54,9 @@ class SimulatedTrade:
     evs_at_entry: float = 0.0
     p_rug_at_entry: float = 0.0
     p_pump_at_entry: float = 0.0
+    # Niveles de salida (Kelly): TP relativo y activación de trailing respecto al TP.
+    tp_pct_at_entry: float = 0.0
+    trail_activation_price: float = 0.0
     trade_id: Optional[int] = None  # ID en tabla trades (para trade_features)
     onchain_entry_sig: Optional[str] = None
     onchain_exit_sig: Optional[str] = None
@@ -285,25 +288,46 @@ class TradeSimulator:
             evs_at_entry=evs_result.evs_adj,
             p_rug_at_entry=evs_result.p_rug,
             p_pump_at_entry=evs_result.p_pump,
+            tp_pct_at_entry=float(stops.get("take_profit_pct") or SETTINGS.get("take_profit_target", 0.30)),
+            trail_activation_price=float(stops.get("trailing_stop_activation") or 0.0),
         )
 
         if self._onchain and self._onchain.is_active():
             if bool(SETTINGS.get("reject_tokens_with_freeze_authority", True)):
+                token2022_id = str(SETTINGS.get("spl_token_2022_program_id", "") or "").strip()
                 cached = await self.db.get_token_safety(token_address)
-                has_freeze = None
+                has_freeze: Optional[bool] = None
+                owner_prog: Optional[str] = None
                 if cached and cached.get("has_freeze_authority") is not None:
                     has_freeze = bool(int(cached.get("has_freeze_authority") or 0))
+                    owner_prog = (cached.get("token_program") or "").strip() or None
+                if has_freeze is False:
+                    if bool(SETTINGS.get("freeze_authority_reverify_token2022", True)):
+                        if owner_prog and token2022_id and owner_prog == token2022_id:
+                            has_freeze = None
+                    if has_freeze is False and bool(
+                        SETTINGS.get("freeze_authority_reverify_if_program_unknown", True)
+                    ):
+                        if owner_prog is None:
+                            has_freeze = None
                 if has_freeze is None:
-                    has, owner_prog, err = await self._onchain.mint_has_freeze_authority(token_address)
+                    has, owner_prog2, err = await self._onchain.mint_has_freeze_authority(token_address)
+                    owner_prog = owner_prog2 or owner_prog
+                    fail_closed = bool(SETTINGS.get("freeze_authority_check_fail_closed", True))
                     if err:
                         logger.warning(
                             "Safety(mint): no se pudo comprobar freeze_authority para {}…: {}",
                             token_address[:12],
                             err,
                         )
+                        if fail_closed:
+                            logger.warning(
+                                "Token {}… rechazado: verificación freeze inconclusa (fail-closed).",
+                                token_address[:12],
+                            )
+                            return None
                     else:
                         has_freeze = bool(has)
-                    # Cache en DB (solo si existe fila en tokens).
                     try:
                         await self.db.set_token_safety(
                             token_address,
@@ -412,11 +436,25 @@ class TradeSimulator:
         if trade.duration_minutes > SETTINGS["max_hold_hours"] * 60:
             return "timeout"
         
-        if trade.current_mfe > 0.15:
-            trailing_stop = trade.entry_price * (1 + trade.current_mfe * 0.5)
+        mfe_floor = float(SETTINGS.get("trailing_mfe_floor_pct", 0.12))
+        base_lock = float(SETTINGS.get("trailing_lock_fraction_base", 0.50))
+        max_lock = float(SETTINGS.get("trailing_lock_fraction_near_tp", 0.85))
+        entry = trade.entry_price
+        tp = trade.take_profit_price
+        tp_pct = getattr(trade, "tp_pct_at_entry", 0.0) or float(SETTINGS.get("take_profit_target", 0.30))
+        activation = getattr(trade, "trail_activation_price", 0.0) or entry * (1 + tp_pct * 0.5)
+
+        trailing_zone = trade.current_mfe > mfe_floor or current_price >= activation
+        if trailing_zone:
+            if tp > activation:
+                progress = max(0.0, min(1.0, (current_price - activation) / (tp - activation + 1e-18)))
+            else:
+                progress = 0.0
+            lock = base_lock + (max_lock - base_lock) * progress
+            trailing_stop = entry * (1 + trade.current_mfe * lock)
             if current_price < trailing_stop:
                 return "trailing_stop"
-        
+
         return None
     
     async def close_trade(

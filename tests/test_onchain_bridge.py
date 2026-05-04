@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch
 
-from src.trading.onchain_bridge import BotOnchainBridge
+from src.trading.onchain_bridge import BotOnchainBridge, sell_error_indicates_frozen_token_account
 
 
 def _live_cfg():
@@ -61,6 +61,13 @@ def test_merged_slippage_bps_uses_paper_minimum():
     with patch.object(ec, "SETTINGS", {"execution_slippage_bps": 400, "slippage_pct": 0.02, "sync_execution_slippage_with_paper": True}):
         with patch.dict("os.environ", {"EXECUTION_SLIPPAGE_BPS": ""}, clear=False):
             assert ec._merged_execution_slippage_bps() == 400
+
+
+def test_sell_error_frozen_detection():
+    assert sell_error_indicates_frozen_token_account("Program log: Error: Account is frozen") is True
+    assert sell_error_indicates_frozen_token_account("custom program error: 0x11") is True
+    assert sell_error_indicates_frozen_token_account("slippage exceeded") is False
+    assert sell_error_indicates_frozen_token_account(None) is False
 
 
 def test_parse_mint_freeze_authority_flag():

@@ -18,6 +18,21 @@ from solders.pubkey import Pubkey
 from solana.rpc.async_api import AsyncClient
 
 from config.settings import SETTINGS
+
+
+def sell_error_indicates_frozen_token_account(message: Optional[str]) -> bool:
+    """
+    Detecta fallos de venta por cuenta SPL congelada (Token / Token-2022).
+    Evita reintentos inútiles cuando el ATA está frozen (p. ej. custom program error 0x11).
+    """
+    if not message:
+        return False
+    m = message.lower()
+    if "account is frozen" in m:
+        return True
+    if "custom program error: 0x11" in m:
+        return True
+    return False
 from src.data_sources.dexscreener import DexScreenerClient
 from src.execution.config import get_execution_config
 from src.execution import ExecutionEngineV1Jupiter
@@ -285,6 +300,16 @@ class BotOnchainBridge:
                     attempts=attempts,
                 )
             last_err = res.error or res.status
+            if sell_error_indicates_frozen_token_account(last_err):
+                logger.error(
+                    "Venta on-chain abortada (cuenta/token congelada, sin reintentos): {}",
+                    last_err,
+                )
+                return OnchainSellResult(
+                    False,
+                    error=last_err,
+                    attempts=attempts,
+                )
             logger.warning(
                 "Venta on-chain intento {} falló: {}; reintento en {:.0f}s",
                 attempts,

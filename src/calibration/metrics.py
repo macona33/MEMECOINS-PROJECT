@@ -321,20 +321,46 @@ class MetricsTracker:
         
         return curve
 
-    async def get_equity_curve_from_trades(self, days: int = 30) -> List[Dict[str, Any]]:
+    async def get_equity_curve_from_trades(
+        self, days: int = 30, min_exit_iso: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
-        Genera curva de equity desde historial de trades (más fiable si daily_metrics está vacío).
+        Curva desde trades cerrados (orden por exit_time).
+
+        - Sin min_exit_iso: equity absoluta desde initial_capital (paper Kelly / DB).
+        - Con min_exit_iso: PnL acumulado USD desde 0 desde esa línea base (reset gráfico).
         """
         from datetime import datetime, timedelta
 
-        trades = await self.db.get_trade_history(days=days)
-        closed = [
-            t for t in trades
-            if t.get("exit_time") and t.get("pnl_usd") is not None
-        ]
-        closed.sort(key=lambda x: str(x.get("exit_time", "")))
+        closed = await self.db.get_closed_trades_for_equity_chart(days, min_exit_iso)
+        curve: List[Dict[str, Any]] = []
+
+        def _ev_iso(t: Dict[str, Any]) -> str:
+            et = str(t.get("exit_time") or "")
+            if len(et) >= 19:
+                return et[:19].replace("T", " ")
+            return et[:10] if et else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if min_exit_iso:
+            anchor = min_exit_iso.strip().replace("T", " ")[:19]
+            curve.append({"date": anchor[:10], "equity": 0.0, "event_time": anchor})
+            equity = 0.0
+            for t in closed:
+                equity += float(t.get("pnl_usd", 0))
+                et = str(t.get("exit_time") or "")
+                date_str = et[:10] if et else datetime.now().strftime("%Y-%m-%d")
+                curve.append({"date": date_str, "equity": equity, "event_time": _ev_iso(t)})
+            if len(curve) <= 1:
+                curve.append(
+                    {
+                        "date": datetime.now().strftime("%Y-%m-%d"),
+                        "equity": 0.0,
+                        "event_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                )
+            return curve
+
         equity = float(SETTINGS["initial_capital"])
-        curve = []
         if closed:
             first_exit = str(closed[0].get("exit_time", ""))[:10]
             try:
@@ -345,29 +371,39 @@ class MetricsTracker:
                 curve.append({"date": first_exit, "equity": equity})
         for t in closed:
             equity += float(t.get("pnl_usd", 0))
-            exit_time = t.get("exit_time", "")
+            exit_time = str(t.get("exit_time", "") or "")
             date_str = exit_time[:10] if exit_time else None
             if date_str:
-                curve.append({"date": date_str, "equity": equity})
+                curve.append(
+                    {
+                        "date": date_str,
+                        "equity": equity,
+                        "event_time": _ev_iso(t),
+                    }
+                )
         if not curve:
             curve.append({"date": datetime.now().strftime("%Y-%m-%d"), "equity": equity})
         return curve
 
     async def get_live_wallet_equity_curve_from_execution_logs(
-        self, days: int = 30
+        self, days: int = 30, min_created_iso: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Curva tipo equity desde swaps **live** confirmados: flujo neto de SOL
-        (compras −SOL, ventas +SOL medido en lamports nativos), reexpresado en USD
-        con sol_price_usd_fallback. No incluye comisiones fuera del swap ni saldo
-        inicial de wallet; sirve para el gráfico diario cuando el bot opera on-chain.
+        Flujo neto aprox. en USD desde execution_logs live (SOL entrante/saliente × precio ref.).
+
+        No es el saldo total de la wallet (no cuenta SOL previo ni otros activos).
+        Con min_created_iso: acumulado desde 0 desde esa marca (reset del gráfico).
         """
-        rows = await self.db.get_live_wallet_execution_events(days)
+        rows = await self.db.get_live_wallet_execution_events(days, min_created_iso)
         sol_px = float(SETTINGS.get("sol_price_usd_fallback", 140.0))
         cum_sol = 0.0
         curve: List[Dict[str, Any]] = []
+        if min_created_iso:
+            anchor = min_created_iso.strip().replace("T", " ")[:19]
+            curve.append({"date": anchor[:10], "equity": 0.0, "event_time": anchor})
         if not rows:
-            curve.append({"date": datetime.now().strftime("%Y-%m-%d"), "equity": 0.0})
+            if not curve:
+                curve.append({"date": datetime.now().strftime("%Y-%m-%d"), "equity": 0.0})
             return curve
         for r in rows:
             side = (r.get("execution_side") or "").upper()
@@ -378,15 +414,14 @@ class MetricsTracker:
             elif side == "SELL":
                 cum_sol += rout / 1e9
             else:
-                # Filas antiguas sin execution_side: compra suele ser pocos lamports SOL;
-                # venta usa amount_in en raw del token (órdenes de magnitud mayores).
                 if ain <= 10_000_000_000:
                     cum_sol -= ain / 1e9
                 else:
                     cum_sol += rout / 1e9
             ca = r.get("created_at")
             date_str = str(ca)[:10] if ca else datetime.now().strftime("%Y-%m-%d")
-            curve.append({"date": date_str, "equity": cum_sol * sol_px})
+            ev = str(ca)[:19].replace("T", " ") if ca else date_str
+            curve.append({"date": date_str, "equity": cum_sol * sol_px, "event_time": ev})
         return curve
     
     async def export_metrics(self, days: int = 30) -> Dict[str, Any]:

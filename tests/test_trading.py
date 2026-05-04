@@ -10,6 +10,7 @@ from dataclasses import dataclass
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.trading import KellyCalculator
+from src.trading.simulator import TradeSimulator, SimulatedTrade
 from src.calibration import LabelGenerator
 
 
@@ -88,6 +89,28 @@ class TestKellyCalculator:
         assert "take_profit_price" in stops
         assert stops["stop_price"] < 0.001
         assert stops["take_profit_price"] > 0.001
+
+
+class TestTrailingStopProgressive:
+    """Trailing proporcional al acercarse al TP (simulator._check_exit_conditions)."""
+
+    def test_trailing_triggers_on_drawdown_from_mfe(self):
+        sim = TradeSimulator.__new__(TradeSimulator)
+        trade = SimulatedTrade(
+            token_address="mint111111111111111111111111111111111111111",
+            symbol="T",
+            entry_price=1.0,
+            position_size_usd=10.0,
+            kelly_fraction=0.01,
+            stop_price=0.5,
+            take_profit_price=1.4,
+            current_price=1.10,
+            current_mfe=0.25,
+            tp_pct_at_entry=0.4,
+            trail_activation_price=1.2,
+        )
+        reason = TradeSimulator._check_exit_conditions(sim, trade, 1.10)
+        assert reason == "trailing_stop"
 
 
 class TestLabelGenerator:
