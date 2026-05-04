@@ -16,7 +16,7 @@ SETTINGS = {
     "require_verified": False,
     "max_holder_concentration": 0.50,
     # Puedes subir a ~25 para evitar rugs de liquidez temprana; contrastar con scripts/backtest_age_filter.py
-    "min_token_age_minutes": 5,
+    "min_token_age_minutes": 15,
     "max_token_age_hours": 24,
     
     # ============== THRESHOLDS DE SCORING ==============
@@ -31,17 +31,13 @@ SETTINGS = {
     "early_stage_max_position": 0.03, # v2.0: Máximo mientras < 100 trades
     "mature_stage_max_position": 0.05,# v2.0: Máximo después de >= 100 trades
     "base_stop_loss": 0.15,
-    "take_profit_target": 0.30,
-    # Trailing: desde activación hasta TP el lock sube de base→near_tp (proporcional al precio).
-    "trailing_mfe_floor_pct": 0.12,
-    "trailing_lock_fraction_base": 0.50,
-    "trailing_lock_fraction_near_tp": 0.85,
+    "take_profit_target": 0.50,
     "max_hold_hours": 24,
     "max_concurrent_trades": 10,
     # Mínimo tamaño nocional (USD) para abrir trade. En live suele ser menor para permitir
     # compras pequeñas; el sizing on-chain además aplica techo en SOL por trade.
     "min_position_usd_paper": 50.0,
-    "min_position_usd_live": 1.0,
+    "min_position_usd_live": 10.0,
     # Solo en live: permite usar un % mayor para poder testear con carteras pequeñas.
     "max_position_pct_live": 0.12,
     
