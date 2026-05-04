@@ -1,5 +1,6 @@
 """Tests del puente on-chain del bot (sin red)."""
 
+import base64
 import pytest
 from unittest.mock import patch
 
@@ -68,6 +69,29 @@ def test_sell_error_frozen_detection():
     assert sell_error_indicates_frozen_token_account("custom program error: 0x11") is True
     assert sell_error_indicates_frozen_token_account("slippage exceeded") is False
     assert sell_error_indicates_frozen_token_account(None) is False
+
+
+def test_account_data_to_raw_bytes_solders_style():
+    """solders.Account devuelve data como bytes (no lista base64)."""
+
+    class FakeAccount:
+        data = bytes(100)
+        owner = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+    raw = BotOnchainBridge._account_data_to_raw_bytes(FakeAccount())
+    assert raw == bytes(100)
+
+
+def test_account_data_to_raw_bytes_json_tuple():
+    buf = bytes(82)
+    b64 = base64.b64encode(buf).decode("ascii")
+
+    class FakeAccount:
+        data = [b64, "base64"]
+        owner = "x"
+
+    raw = BotOnchainBridge._account_data_to_raw_bytes(FakeAccount())
+    assert raw == buf
 
 
 def test_parse_mint_freeze_authority_flag():

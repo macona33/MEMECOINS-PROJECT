@@ -8,10 +8,11 @@ No modifica umbrales ni tamaños: usa position_size_usd del simulador y lo convi
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from loguru import logger
 from solders.pubkey import Pubkey
@@ -83,6 +84,32 @@ class BotOnchainBridge:
         # offset 46: freeze_authority_option u32 LE (Mint layout base)
         opt = int.from_bytes(data[46:50], "little", signed=False)
         return opt != 0
+
+    @staticmethod
+    def _account_data_to_raw_bytes(account_value: Any) -> Optional[bytes]:
+        """
+        Normaliza `Account.data` según versión de solana-py/solders.
+
+        - Respuesta nueva: `data` es `bytes` / `memoryview` (datos crudos del mint).
+        - Respuesta JSON clásica: `data == [base64_str, "base64"]`.
+        """
+        data = getattr(account_value, "data", None)
+        if data is None:
+            return None
+        if isinstance(data, (bytes, bytearray)):
+            return bytes(data)
+        if isinstance(data, memoryview):
+            return bytes(data)
+        if isinstance(data, (list, tuple)) and len(data) >= 1:
+            chunk = data[0]
+            if isinstance(chunk, (bytes, bytearray)):
+                return bytes(chunk)
+            if isinstance(chunk, str) and chunk.strip():
+                try:
+                    return base64.b64decode(chunk)
+                except Exception:
+                    return None
+        return None
 
     def is_active(self) -> bool:
         cfg = get_execution_config()
@@ -172,12 +199,11 @@ class BotOnchainBridge:
             if v is None:
                 return None, None, "mint no encontrado"
             owner = str(getattr(v, "owner", "") or "")
-            data = getattr(v, "data", None)
-            if not data or not isinstance(data, (list, tuple)) or not data[0]:
+            raw = self._account_data_to_raw_bytes(v)
+            if raw is None:
+                return None, owner, "mint data formato desconocido"
+            if len(raw) == 0:
                 return None, owner, "mint data vacío"
-            import base64
-
-            raw = base64.b64decode(data[0])
             has = self._parse_mint_has_freeze_authority(raw)
             if has is None:
                 return None, owner, "mint data demasiado corto"
