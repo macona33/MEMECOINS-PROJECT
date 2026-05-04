@@ -16,7 +16,7 @@ SETTINGS = {
     "require_verified": False,
     "max_holder_concentration": 0.50,
     # Puedes subir a ~25 para evitar rugs de liquidez temprana; contrastar con scripts/backtest_age_filter.py
-    "min_token_age_minutes": 25,
+    "min_token_age_minutes": 14,
     "max_token_age_hours": 24,
     
     # ============== THRESHOLDS DE SCORING ==============
