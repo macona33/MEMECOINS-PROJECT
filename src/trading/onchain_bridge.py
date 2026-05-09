@@ -73,6 +73,10 @@ class OnchainSellResult:
 class BotOnchainBridge:
     """Ejecuta compra/venta en cadena alineada con el simulador."""
 
+    def __init__(self):
+        self._sol_usd_cache: Optional[float] = None
+        self._sol_usd_cached_at: Optional[float] = None
+
     @staticmethod
     def _parse_mint_has_freeze_authority(data: bytes) -> Optional[bool]:
         """
@@ -156,10 +160,42 @@ class BotOnchainBridge:
         return _env_float("SELL_RETRY_INTERVAL_S", float(SETTINGS.get("sell_retry_interval_s", 15.0)))
 
     async def fetch_sol_usd(self, dex: DexScreenerClient) -> Optional[float]:
+        ttl_s = float(SETTINGS.get("sol_price_cache_ttl_seconds", 90.0))
+        now = time.monotonic()
+
+        if (
+            self._sol_usd_cache is not None
+            and self._sol_usd_cached_at is not None
+            and (now - self._sol_usd_cached_at) <= ttl_s
+        ):
+            return float(self._sol_usd_cache)
+
         prices = await dex.get_prices_batch([WSOL_MINT])
         p = float(prices.get(WSOL_MINT, 0) or 0)
         if p > 0:
+            self._sol_usd_cache = p
+            self._sol_usd_cached_at = now
             return p
+
+        # Si Dex está rate-limited/no responde, intenta usar caché aunque esté algo vieja.
+        stale_ok_s = float(SETTINGS.get("sol_price_cache_stale_ok_seconds", 300.0))
+        if (
+            self._sol_usd_cache is not None
+            and self._sol_usd_cached_at is not None
+            and (now - self._sol_usd_cached_at) <= stale_ok_s
+        ):
+            logger.warning(
+                "Precio SOL (DexScreener) no disponible; usando caché stale (age={:.1f}s) USD={:.2f}",
+                now - self._sol_usd_cached_at,
+                float(self._sol_usd_cache),
+            )
+            return float(self._sol_usd_cache)
+
+        fail_closed = bool(SETTINGS.get("sol_price_fail_closed_live", True))
+        if fail_closed:
+            logger.error("Precio SOL (DexScreener) no disponible y sin caché válida; abortando (fail-closed).")
+            return None
+
         fb = float(SETTINGS.get("sol_price_usd_fallback", 140.0))
         logger.warning("Precio SOL (DexScreener) no disponible; fallback USD={}", fb)
         return fb

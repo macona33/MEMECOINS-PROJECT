@@ -1,10 +1,11 @@
 """Test DexScreener client."""
+__test__ = False  # script manual; no colectar con pytest
 import asyncio
 import sys
 sys.path.insert(0, '.')
 from src.data_sources import DexScreenerClient
 
-async def test():
+async def main():
     client = DexScreenerClient()
     
     print("Testing get_new_solana_pairs...")
@@ -28,4 +29,4 @@ async def test():
         print(f"  {i+1}. {base.get('symbol', '??')} - Liq: ${liq:,.0f} - Price: ${float(price):.8f}")
 
 if __name__ == "__main__":
-    asyncio.run(test())
+    asyncio.run(main())

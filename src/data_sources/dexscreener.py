@@ -19,24 +19,28 @@ class RateLimiter:
     """Rate limiter con ventana deslizante."""
     max_requests: int
     window_seconds: int = 60
+    block: bool = True
     
     def __post_init__(self):
         self._timestamps: List[float] = []
         self._lock = asyncio.Lock()
     
-    async def acquire(self) -> None:
+    async def acquire(self) -> bool:
         async with self._lock:
             now = asyncio.get_event_loop().time()
             cutoff = now - self.window_seconds
             self._timestamps = [t for t in self._timestamps if t > cutoff]
             
             if len(self._timestamps) >= self.max_requests:
+                if not self.block:
+                    return False
                 sleep_time = self._timestamps[0] - cutoff + 0.1
                 logger.debug(f"Rate limit reached, sleeping {sleep_time:.2f}s")
                 await asyncio.sleep(sleep_time)
                 self._timestamps = self._timestamps[1:]
             
             self._timestamps.append(now)
+            return True
 
 
 class DexScreenerClient:
@@ -44,9 +48,9 @@ class DexScreenerClient:
     
     BASE_URL = "https://api.dexscreener.com"
     
-    def __init__(self, rate_limit: int = None):
+    def __init__(self, rate_limit: int = None, *, block_on_rate_limit: bool = True):
         self.rate_limit = rate_limit or SETTINGS["dexscreener_rate_limit"]
-        self._limiter = RateLimiter(max_requests=self.rate_limit)
+        self._limiter = RateLimiter(max_requests=self.rate_limit, block=block_on_rate_limit)
         self._session: Optional[aiohttp.ClientSession] = None
     
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -64,7 +68,10 @@ class DexScreenerClient:
             logger.error(f"Max retries reached for {endpoint}")
             return None
         
-        await self._limiter.acquire()
+        acquired = await self._limiter.acquire()
+        if not acquired:
+            logger.debug(f"DexScreener rate limit (non-blocking), skipping {endpoint}")
+            return None
         session = await self._get_session()
         
         url = f"{self.BASE_URL}{endpoint}"
@@ -74,6 +81,9 @@ class DexScreenerClient:
                 if response.status == 200:
                     return await response.json()
                 elif response.status == 429:
+                    if not self._limiter.block:
+                        logger.debug(f"DexScreener 429 (non-blocking) for {endpoint}")
+                        return None
                     backoff = 30 * (2 ** _retry_count)  # 30s, 60s, 120s
                     logger.warning(f"Rate limited by DexScreener, waiting {backoff}s...")
                     await asyncio.sleep(backoff)

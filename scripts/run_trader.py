@@ -47,12 +47,18 @@ class TradingApp:
     def __init__(self):
         self.db = DatabaseManager()
         self.timeseries = TimeseriesManager()
-        self.dex_client = DexScreenerClient()
+        # Separa presupuestos de rate-limit DexScreener:
+        # - scan: descubrimiento (puede dormir)
+        # - prices: monitor/series (puede dormir)
+        # - live: camino crítico BUY/SELL (NO debe dormir)
+        self.dex_scan = DexScreenerClient()
+        self.dex_prices = DexScreenerClient()
+        self.dex_live = DexScreenerClient(block_on_rate_limit=False)
         self.solscan_client = SolscanClient()
         
         self.scanner = TokenScanner(
             db=self.db,
-            dex_client=self.dex_client,
+            dex_client=self.dex_scan,
             solscan_client=self.solscan_client,
         )
         
@@ -70,7 +76,8 @@ class TradingApp:
         self.onchain_bridge = BotOnchainBridge()
         self.simulator = TradeSimulator(
             db=self.db,
-            dex_client=self.dex_client,
+            dex_client=self.dex_prices,
+            dex_client_live=self.dex_live,
             evs_calculator=self.evs_calculator,
             kelly_calculator=self.kelly_calculator,
             onchain_bridge=self.onchain_bridge,
@@ -79,7 +86,7 @@ class TradingApp:
             db=self.db,
             simulator=self.simulator,
             timeseries=self.timeseries,
-            dex_client=self.dex_client,
+            dex_client=self.dex_prices,
         )
         
         self.model_updater = ModelUpdater(
@@ -251,6 +258,37 @@ class TradingApp:
             f"EVS_adj={evs_result.evs_adj:.4f} "
             f"[{self.regime_detector.current_regime.value}]"
         )
+
+        # ========== Guard B: no entrar pegado al máximo reciente (pullback mínimo) ==========
+        if bool(SETTINGS.get("avoid_entry_near_local_high", False)):
+            lb_min = int(SETTINGS.get("entry_local_high_lookback_minutes", 45) or 0)
+            min_dd = float(SETTINGS.get("entry_min_drawdown_from_local_high_pct", 0.05) or 0.0)
+            entry_px = float(token_for_scoring.get("price_usd") or 0.0)
+            if entry_px > 0 and lb_min > 0 and min_dd > 0:
+                now = datetime.now()
+                start = now - timedelta(minutes=lb_min)
+                df = await self.timeseries.get_token_prices(address, start_date=start, end_date=now)
+                if df is not None and not df.empty:
+                    mx = float(df["price_usd"].max())
+                    hi = max(mx, entry_px)
+                    dd = (hi - entry_px) / hi if hi > 0 else 0.0
+                    if dd < min_dd:
+                        logger.info(
+                            "Entry guard (B) bloquea {}: drawdown_vs_max_local={:.2%} < {:.2%} "
+                            "(lookback={}m, hi={:.8f}, entry={:.8f})",
+                            symbol,
+                            dd,
+                            min_dd,
+                            lb_min,
+                            hi,
+                            entry_px,
+                        )
+                        return
+                else:
+                    logger.debug(
+                        "Entry guard (B) sin series parquet en ventana; no bloquea {}",
+                        symbol,
+                    )
         
         self.kelly_calculator.set_gamma_multiplier(
             self.risk_manager.get_gamma_multiplier()
@@ -456,6 +494,11 @@ class TradingApp:
         await self.scanner.close()
         await self.trajectory_monitor.close()
         await self.simulator.close()
+        # Cierra sesiones HTTP explícitas (Dex/Solscan)
+        await self.dex_scan.close()
+        await self.dex_prices.close()
+        await self.dex_live.close()
+        await self.solscan_client.close()
         await self.db.close()
         
         logger.info("Trading system shutdown complete")

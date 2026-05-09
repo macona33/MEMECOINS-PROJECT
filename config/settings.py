@@ -40,6 +40,13 @@ SETTINGS = {
     "min_position_usd_live": 1.0,
     # Solo en live: permite usar un % mayor para poder testear con carteras pequeñas.
     "max_position_pct_live": 0.12,
+
+    # ============== ENTRY GUARD B (pullback vs máximo reciente) ==============
+    # Requiere series en parquet (TimeseriesManager). Si no hay datos, no bloquea.
+    "avoid_entry_near_local_high": False,
+    "entry_local_high_lookback_minutes": 45,
+    # Exige que el precio de entrada esté al menos este % por debajo del máximo en la ventana.
+    "entry_min_drawdown_from_local_high_pct": 0.05,
     
     # ============== v2.0: CAPS DE KELLY ==============
     "min_sigma_cap": 0.05,            # Si sigma < esto, aplicar cap conservador
@@ -127,6 +134,13 @@ SETTINGS = {
     "max_onchain_sol_per_trade": 0.7,
     "min_onchain_sol_per_trade": 0.001,
     "sol_price_usd_fallback": 140.0,
+    # Precio SOL: evita dormir por rate-limit en medio de BUY/SELL.
+    # - ttl: si hay caché reciente, se usa directamente.
+    # - stale_ok: si Dex no responde, permite usar caché algo vieja (reduce latencia).
+    # - fail_closed: si no hay precio ni caché válida, aborta la compra (más seguro).
+    "sol_price_cache_ttl_seconds": 90.0,
+    "sol_price_cache_stale_ok_seconds": 300.0,
+    "sol_price_fail_closed_live": True,
     "sync_execution_slippage_with_paper": True,
     # Una sola ronda de trading por mint tras un cierre (evita re-entradas en tokens rotos).
     "block_reentry_same_token_after_close": True,

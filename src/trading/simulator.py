@@ -119,12 +119,14 @@ class TradeSimulator:
         self,
         db: DatabaseManager,
         dex_client: Optional[DexScreenerClient] = None,
+        dex_client_live: Optional[DexScreenerClient] = None,
         evs_calculator: Optional[EVSCalculator] = None,
         kelly_calculator: Optional[KellyCalculator] = None,
         onchain_bridge: Optional["BotOnchainBridge"] = None,
     ):
         self.db = db
         self.dex_client = dex_client or DexScreenerClient()
+        self.dex_client_live = dex_client_live
         self.evs_calculator = evs_calculator or EVSCalculator()
         self.kelly_calculator = kelly_calculator or KellyCalculator()
         self._onchain = onchain_bridge
@@ -233,8 +235,9 @@ class TradeSimulator:
         sizing_capital = self.available_capital
         live_sizing = False
         if self._onchain and self._onchain.is_active():
+            dex_live = self.dex_client_live or self.dex_client
             live_sizing = True
-            cap_usd, cap_err = await self._onchain.wallet_available_usd_for_new_buy(self.dex_client)
+            cap_usd, cap_err = await self._onchain.wallet_available_usd_for_new_buy(dex_live)
             if cap_usd is None:
                 logger.warning("Sizing live: no se pudo leer capital wallet: {}", cap_err)
             else:
@@ -293,6 +296,7 @@ class TradeSimulator:
         )
 
         if self._onchain and self._onchain.is_active():
+            dex_live = self.dex_client_live or self.dex_client
             if bool(SETTINGS.get("reject_tokens_with_freeze_authority", True)):
                 token2022_id = str(SETTINGS.get("spl_token_2022_program_id", "") or "").strip()
                 cached = await self.db.get_token_safety(token_address)
@@ -346,7 +350,7 @@ class TradeSimulator:
             buy_res = await self._onchain.execute_buy_for_open(
                 token_address,
                 position.position_usd,
-                self.dex_client,
+                dex_live,
                 self.db,
             )
             if not buy_res.ok:
@@ -577,3 +581,5 @@ class TradeSimulator:
     async def close(self) -> None:
         """Cierra el simulador."""
         await self.dex_client.close()
+        if self.dex_client_live and self.dex_client_live is not self.dex_client:
+            await self.dex_client_live.close()
