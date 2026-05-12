@@ -21,6 +21,21 @@ from solana.rpc.async_api import AsyncClient
 from config.settings import SETTINGS
 
 
+def sell_error_indicates_no_tokens_to_sell(message: Optional[str]) -> bool:
+    """
+    Saldo SPL 0: no hay posición on-chain que vender (p. ej. cierre manual desde la cartera).
+    No reintentar: permite que el simulador cierre el trade en DB al instante.
+    """
+    if not message:
+        return False
+    m = message.lower()
+    if "saldo spl 0" in m and "nada que vender" in m:
+        return True
+    if "nothing to sell" in m:
+        return True
+    return False
+
+
 def sell_error_indicates_frozen_token_account(message: Optional[str]) -> bool:
     """
     Detecta fallos de venta por cuenta SPL congelada (Token / Token-2022).
@@ -34,6 +49,8 @@ def sell_error_indicates_frozen_token_account(message: Optional[str]) -> bool:
     if "custom program error: 0x11" in m:
         return True
     return False
+
+
 from src.data_sources.dexscreener import DexScreenerClient
 from src.execution.config import get_execution_config
 from src.execution import ExecutionEngineV1Jupiter
@@ -372,6 +389,13 @@ class BotOnchainBridge:
                     error=last_err,
                     attempts=attempts,
                 )
+            if sell_error_indicates_no_tokens_to_sell(last_err):
+                logger.info(
+                    "Venta on-chain omitida (sin SPL del mint en wallet; posible venta manual). "
+                    "Se considera posición ya cerrada en cadena: {}",
+                    last_err,
+                )
+                return OnchainSellResult(True, attempts=attempts)
             logger.warning(
                 "Venta on-chain intento {} falló: {}; reintento en {:.0f}s",
                 attempts,

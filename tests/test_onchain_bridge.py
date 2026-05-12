@@ -4,7 +4,11 @@ import base64
 import pytest
 from unittest.mock import patch
 
-from src.trading.onchain_bridge import BotOnchainBridge, sell_error_indicates_frozen_token_account
+from src.trading.onchain_bridge import (
+    BotOnchainBridge,
+    sell_error_indicates_frozen_token_account,
+    sell_error_indicates_no_tokens_to_sell,
+)
 
 
 def _live_cfg():
@@ -62,6 +66,12 @@ def test_merged_slippage_bps_uses_paper_minimum():
     with patch.object(ec, "SETTINGS", {"execution_slippage_bps": 400, "slippage_pct": 0.02, "sync_execution_slippage_with_paper": True}):
         with patch.dict("os.environ", {"EXECUTION_SLIPPAGE_BPS": ""}, clear=False):
             assert ec._merged_execution_slippage_bps() == 400
+
+
+def test_sell_error_no_tokens_to_sell():
+    assert sell_error_indicates_no_tokens_to_sell("saldo SPL 0 para este mint (nada que vender)") is True
+    assert sell_error_indicates_no_tokens_to_sell("Nothing to sell") is True
+    assert sell_error_indicates_no_tokens_to_sell("slippage exceeded") is False
 
 
 def test_sell_error_frozen_detection():

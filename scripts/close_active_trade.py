@@ -1,8 +1,13 @@
 """
-Cierra un trade activo por dirección de mint (útil si el precio DexScreener falla).
+Cierra un trade activo en la base de datos por dirección de mint.
+
+- Útil si DexScreener no devuelve precio o quieres forzar cierre en paper.
+- Si vendiste el SPL manualmente desde la cartera (emergencia): la cadena ya no
+  tiene tokens, pero el bot sigue con el trade en `active_trades` hasta que lo
+  cierres aquí (o hasta que el flujo normal llame a `close_trade`).
 
 Uso:
-  python scripts/close_active_trade.py 9d4JKN9bfuWRZ974jkydf2JVecWgjzKL65oXjUpuUQjH
+  python scripts/close_active_trade.py <TOKEN_ADDRESS>
 """
 
 import asyncio
